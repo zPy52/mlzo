@@ -7,6 +7,8 @@
 - Every task thread must have its own branch and worktree. Reuse a prepared
   worktree that belongs to that task, including when resuming it. Preserve
   unrelated staged, unstaged, untracked, and ignored files.
+- Name new task branches `mlzo/<change-name>`. Reuse an existing task branch
+  even if it uses a different prefix.
 - The implemented contract is local single-device training or one remote worker
   per run. Read [support boundaries](docs/alpha-support.md) before changing it.
   `plan.md` is a future design, not implemented behavior.

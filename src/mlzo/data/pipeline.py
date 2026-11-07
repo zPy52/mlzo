@@ -3,22 +3,32 @@
 from __future__ import annotations
 
 import math
-import random
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from itertools import islice
 from numbers import Real
 from pathlib import Path
 from typing import Any, Iterator
 
 import torch
-from torch.utils.data import DataLoader, Dataset, IterableDataset, default_collate
+from torch.utils.data import DataLoader, Dataset, default_collate
 
 from mlzo.errors import ConfigurationError, UnsupportedFeatureError
 
+from .loading import (
+    FilteredIterable,
+    IterableView,
+    OrderedDataset,
+    ShuffledIterable,
+    collate_normalized,
+    finite,
+    length as _length,
+    map_style,
+    mapped,
+)
 from .sources import (
     DatasetIterable,
     Source,
+    StreamDataset,
     describe_source,
     indexed_source,
     is_s3,
@@ -39,83 +49,10 @@ def _identity(value: Any) -> Any:
     return value
 
 
-def _length(value: Any) -> int | None:
-    try:
-        return len(value)
-    except (TypeError, NotImplementedError):
-        return None
-
-
 @dataclass(frozen=True)
 class _Operation:
     name: str
     options: tuple[tuple[str, Any], ...]
-
-
-@dataclass(frozen=True)
-class _Map:
-    source: Iterable
-    function: Callable
-
-    def __iter__(self) -> Iterator:
-        for item in self.source:
-            yield self.function(item)
-
-    def __len__(self) -> int:
-        return len(self.source)
-
-
-@dataclass(frozen=True)
-class _Batch:
-    source: Iterable
-    size: int
-    drop_last: bool
-    collate_fn: Callable | None
-
-    def __iter__(self) -> Iterator:
-        iterator = iter(self.source)
-        collate = self.collate_fn if self.collate_fn is not None else default_collate
-        while True:
-            items = list(islice(iterator, self.size))
-            if not items or (self.drop_last and len(items) != self.size):
-                return
-            yield collate(items)
-
-    def __len__(self) -> int:
-        count = len(self.source)
-        return count // self.size if self.drop_last else (count + self.size - 1) // self.size
-
-
-@dataclass(frozen=True)
-class _Shuffle:
-    source: Iterable
-    seed: int
-    buffer_size: int | None
-
-    def __iter__(self) -> Iterator:
-        generator = random.Random(self.seed)
-        if self.buffer_size is None:
-            # The length check avoids trying to exhaust an unbounded stream.
-            if _length(self.source) is None:
-                raise UnsupportedFeatureError(
-                    "Full shuffling requires a source with a finite length. "
-                    "Use .shuffle(seed=..., buffer_size=...) for streams."
-                )
-            items = list(self.source)
-            generator.shuffle(items)
-            yield from items
-            return
-        iterator = iter(self.source)
-        buffer = list(islice(iterator, self.buffer_size))
-        for item in iterator:
-            index = generator.randrange(len(buffer))
-            yield buffer[index]
-            buffer[index] = item
-        generator.shuffle(buffer)
-        yield from buffer
-
-    def __len__(self) -> int:
-        return len(self.source)
 
 
 def _statistics(value: Any, name: str) -> tuple[float, ...]:
@@ -194,12 +131,13 @@ class DataPipeline:
     Source objects remain caller-owned. Immutability concerns configuration, not
     the contents of a supplied list, tensor, dataset, or arbitrary iterator.
     Factories and file reads run on build, never on serialization. JSONL and
-    iterable sources stream; a full shuffle buffers all finite input records.
+    iterable sources stream. Full indexable shuffles only permute indices;
+    full iterable shuffles buffer finite input records during iteration.
     """
 
     source: Any
     _operations: tuple[_Operation, ...] = field(default=(), repr=False)
-    _num_workers: int = field(default=0, repr=False)
+    _num_workers: int | None = field(default=None, repr=False)
     _prefetch_factor: int | None = field(default=None, repr=False)
     _loader_configured: bool = field(default=False, repr=False)
 
@@ -216,49 +154,107 @@ class DataPipeline:
             raise ConfigurationError("map() requires a callable.")
         return self._append("map", function=function)
 
-    def shuffle(self, seed: int, *, buffer_size: int | None = None) -> DataPipeline:
-        """Shuffle with seed + epoch. Streams require a positive buffer_size.
+    def _samples_only(self, name: str) -> None:
+        if any(op.name == "batch" for op in self._operations) or (
+            self.source.kind == "native" and isinstance(self.source.value, DataLoader)
+        ):
+            raise ConfigurationError(f"{name}() acts on samples; use map() for existing batches.")
 
-        Full shuffle consumes the finite upstream sequence when iteration starts.
-        Buffered shuffle uses bounded memory and is not a uniform full shuffle.
+    def transform(self, function: Callable[[Any], Any]) -> DataPipeline:
+        """Transform individual samples. After batch(), use map() instead."""
+        self._samples_only("transform")
+        if not callable(function):
+            raise ConfigurationError("transform() requires a callable.")
+        return self._append("transform", function=function)
+
+    def filter(self, function: Callable[[Any], bool]) -> DataPipeline:
+        """Lazily retain samples with a scalar boolean predicate; length is unknown."""
+        self._samples_only("filter")
+        if not callable(function):
+            raise ConfigurationError("filter() requires a callable.")
+        return self._append("filter", function=function)
+
+    def shuffle(
+        self, seed: int = 42, *, buffer: int | None = None, buffer_size: int | None = None
+    ) -> DataPipeline:
+        """Shuffle with seed + epoch. Streams need a bounded buffer.
+
+        Full indexable shuffles permute indices without reading samples. Finite
+        iterable shuffles buffer samples during iteration. Buffered shuffle is
+        bounded and is not a uniform full permutation. buffer_size is legacy.
         """
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise ConfigurationError("Shuffle seed must be an integer.")
-        if buffer_size is not None:
-            _integer(buffer_size, "buffer_size", minimum=1)
-        return self._append("shuffle", seed=seed, buffer_size=buffer_size)
+        if buffer is not None and buffer_size is not None:
+            raise ConfigurationError("Use only one of buffer and buffer_size.")
+        size = buffer if buffer is not None else buffer_size
+        if size is not None:
+            _integer(size, "shuffle buffer", minimum=1)
+        return self._append("shuffle", seed=seed, buffer_size=size)
 
     def batch(
-        self, size: int, drop_last: bool = False, collate_fn: Callable | None = None
+        self, size: int, drop_last: bool = False, collate_fn: Callable | None = None,
+        *, shuffle: bool = False, workers: int | None = None,
+        prefetch: int | None = None, combine: Callable | None = None,
+        sampler: Any = None, pin_memory: bool = False, normalize: bool = True,
     ) -> DataPipeline:
-        """Group current items with torch default_collate or an explicit callable."""
+        """Build batches with native DataLoader workers and collation.
+
+        Default collation shapes scalar/1D tensor leaves to at least two axes
+        only after stacking. normalize=False preserves native shapes; explicit
+        combine/collate_fn output always keeps its shape. Worker prefetch counts
+        batches per worker. Construct a native DataLoader for advanced options
+        such as batch_sampler, then pass it to data() unchanged.
+        """
         _integer(size, "batch size", minimum=1)
-        if not isinstance(drop_last, bool):
-            raise ConfigurationError("drop_last must be a boolean.")
-        if collate_fn is not None and not callable(collate_fn):
-            raise ConfigurationError("collate_fn must be callable or None.")
-        return self._append("batch", size=size, drop_last=drop_last, collate_fn=collate_fn)
+        for name, value in (("drop_last", drop_last), ("shuffle", shuffle),
+                            ("pin_memory", pin_memory), ("normalize", normalize)):
+            if not isinstance(value, bool):
+                raise ConfigurationError(f"{name} must be a boolean.")
+        if workers is not None:
+            _integer(workers, "worker count")
+        if prefetch is not None:
+            _integer(prefetch, "prefetch factor", minimum=1)
+        if combine is not None and collate_fn is not None:
+            raise ConfigurationError("Use only one of combine and collate_fn.")
+        collate = combine if combine is not None else collate_fn
+        if collate is not None and not callable(collate):
+            raise ConfigurationError("combine/collate_fn must be callable or None.")
+        if sampler is not None and (shuffle or any(op.name == "shuffle" for op in self._operations)):
+            raise ConfigurationError("sampler and shuffle cannot be combined.")
+        if sampler is not None and not hasattr(sampler, "__iter__"):
+            raise ConfigurationError("sampler must be an iterable of indices.")
+        if any(op.name == "batch" for op in self._operations):
+            raise UnsupportedFeatureError("This pipeline is already batched. Use a native DataLoader for re-batching.")
+        return self._append("batch", size=size, drop_last=drop_last, collate_fn=collate,
+                            shuffle=shuffle, workers=workers, prefetch=prefetch,
+                            sampler=sampler, pin_memory=pin_memory, normalize=normalize)
 
     def workers(self, count: int, *, prefetch_factor: int | None = None) -> DataPipeline:
-        """Read indexable source samples in CPU workers, preserving source order.
-
-        Ordered pipeline operations run in the calling process. Generic streams
-        and native DataLoaders cannot be repartitioned by this alpha adapter.
-        """
+        """Set native loading workers. Operations before batching run there."""
         _integer(count, "worker count")
-        if prefetch_factor is not None:
-            _integer(prefetch_factor, "prefetch_factor", minimum=1)
-        return replace(
-            self,
-            _num_workers=count,
-            _prefetch_factor=prefetch_factor if prefetch_factor is not None else self._prefetch_factor,
-            _loader_configured=True,
-        )
+        if self._num_workers is not None and count != self._num_workers:
+            raise ConfigurationError("Conflicting worker counts.")
+        result = replace(self, _num_workers=count, _loader_configured=True)
+        return result.prefetch(prefetch_factor) if prefetch_factor is not None else result
 
     def prefetch(self, factor: int) -> DataPipeline:
-        """Set the number of source items prefetched per worker. Requires workers > 0."""
+        """Set native prefetch_factor, counting batches per worker."""
         _integer(factor, "prefetch factor", minimum=1)
+        if self._prefetch_factor is not None and factor != self._prefetch_factor:
+            raise ConfigurationError("Conflicting prefetch factors.")
         return replace(self, _prefetch_factor=factor, _loader_configured=True)
+
+    def _loading_options(self) -> tuple[int, int | None]:
+        batch = next((dict(op.options) for op in self._operations if op.name == "batch"), {})
+        workers, prefetch = batch.get("workers"), batch.get("prefetch")
+        if workers is not None and self._num_workers is not None and workers != self._num_workers:
+            raise ConfigurationError("Conflicting batch workers and workers() counts.")
+        if prefetch is not None and self._prefetch_factor is not None and prefetch != self._prefetch_factor:
+            raise ConfigurationError("Conflicting batch prefetch and prefetch() factors.")
+        workers = self._num_workers if workers is None else workers
+        prefetch = self._prefetch_factor if prefetch is None else prefetch
+        return workers or 0, prefetch
 
     def images(
         self,
@@ -326,64 +322,86 @@ class DataPipeline:
         return self._append("tokenize", tokenizer=tokenizer, key=key)
 
     def build(self, epoch: int = 0) -> Iterable:
-        """Rebuild on the execution worker, with shuffle seeds offset by epoch.
+        """Construct native loading lazily; shuffle uses seed + epoch.
 
-        Reiterable sources start a new pass. A supplied one-shot iterator keeps
-        its own consumed state. No exact cursor or restart guarantee is implied.
+        Iterable workers batch their own shards, following native PyTorch
+        semantics, including drop_last per worker. Partial epochs have no exact
+        cursor replay guarantee. Generic native IterableDatasets own sharding.
         """
         _integer(epoch, "epoch")
-        if self._prefetch_factor is not None and not self._num_workers:
-            raise UnsupportedFeatureError("prefetch() requires at least one CPU worker.")
+        workers, prefetch = self._loading_options()
         values = materialize_source(self.source)
-        if isinstance(values, DataLoader):
-            if self._loader_configured:
-                raise UnsupportedFeatureError(
-                    "A native DataLoader owns its workers and prefetch settings. "
-                    "Configure it directly or provide its Dataset instead."
-                )
-            # With no operations this is the exact caller-supplied loader.
-        elif self._num_workers:
-            if not isinstance(values, Dataset) or isinstance(values, IterableDataset):
-                raise UnsupportedFeatureError(
-                    "CPU workers require a map-style Dataset or an indexable collection/file. "
-                    "Arbitrary iterable sources cannot be sharded safely."
-                )
-            if _length(values) is None:
-                raise UnsupportedFeatureError("CPU workers require a Dataset with a finite length.")
-            options = {}
-            if self._prefetch_factor is not None:
-                options["prefetch_factor"] = self._prefetch_factor
-            values = DataLoader(
-                values,
-                batch_size=None,
-                collate_fn=_identity,
-                num_workers=self._num_workers,
-                generator=torch.Generator().manual_seed(epoch % (2**64)),
-                **options,
+        native_loader = isinstance(values, DataLoader)
+        if native_loader and (self._loader_configured or any(op.name == "batch" for op in self._operations)):
+            raise UnsupportedFeatureError(
+                "A native DataLoader owns batching, workers and prefetch. Configure it directly or provide its Dataset."
             )
-        elif isinstance(values, Dataset) and not isinstance(values, IterableDataset):
-            if _length(values) is None:
-                raise UnsupportedFeatureError("A map-style Dataset must define __len__ in this alpha.")
-            values = DatasetIterable(values)
+        if prefetch is not None and not workers:
+            raise ConfigurationError("prefetch requires at least one CPU worker.")
+        sampler = next(
+            (dict(op.options)["sampler"] for op in self._operations if op.name == "batch"), None
+        )
+        if map_style(values) and _length(values) is None and sampler is None:
+            raise UnsupportedFeatureError(
+                "A map-style Dataset must provide a finite length (__len__) or an explicit sampler."
+            )
+        if workers and not isinstance(values, Dataset):
+            raise UnsupportedFeatureError("Workers require a Dataset; arbitrary iterables cannot be sharded safely.")
+        if workers > 1 and isinstance(values, StreamDataset) and getattr(values.factory, "mlzo_replayable", False) is not True:
+            raise UnsupportedFeatureError("Multiple stream workers require factory.mlzo_replayable = True.")
+        batched = native_loader
         for operation in self._operations:
             options = dict(operation.options)
-            if operation.name == "map":
-                values = _Map(values, options["function"])
+            if operation.name in {"map", "transform"}:
+                if operation.name == "transform" and batched:
+                    raise ConfigurationError("transform() acts on samples; use map() for batches.")
+                values = mapped(values, options["function"])
+            elif operation.name == "filter":
+                if batched:
+                    raise ConfigurationError("filter() acts on samples, not existing batches.")
+                values = FilteredIterable(values, options["function"])
             elif operation.name == "batch":
-                values = _Batch(values, **options)
+                sampler = options["sampler"]
+                if sampler is not None and not map_style(values):
+                    raise UnsupportedFeatureError("A sampler requires an indexable Dataset, not an iterable or filtered source.")
+                if sampler is not None and hasattr(sampler, "set_epoch"):
+                    sampler.set_epoch(epoch)
+                if options["shuffle"]:
+                    if not map_style(values):
+                        raise UnsupportedFeatureError("Batch shuffle requires an indexable finite source; use shuffle(buffer=...) for streams.")
+                    values = OrderedDataset(values, 42 + epoch)
+                collate = options["collate_fn"]
+                if collate is None:
+                    collate = collate_normalized if options["normalize"] else default_collate
+                values = DataLoader(
+                    values if isinstance(values, Dataset) else IterableView(values),
+                    batch_size=options["size"], drop_last=options["drop_last"],
+                    sampler=sampler, collate_fn=collate, num_workers=workers,
+                    pin_memory=options["pin_memory"],
+                    generator=torch.Generator().manual_seed(epoch % (2**64)),
+                    **({"prefetch_factor": prefetch} if prefetch is not None else {}),
+                )
+                batched = True
             elif operation.name == "shuffle":
-                if options["buffer_size"] is None and _length(values) is None:
-                    raise UnsupportedFeatureError(
-                        "Full shuffling requires a finite length. Set buffer_size for streaming data."
-                    )
-                values = _Shuffle(values, options["seed"] + epoch, options["buffer_size"])
+                if options["buffer_size"] is None and not finite(values):
+                    raise UnsupportedFeatureError("Full shuffling requires finite input. Set buffer for streams.")
+                if map_style(values) and options["buffer_size"] is None:
+                    values = OrderedDataset(values, options["seed"] + epoch)
+                else:
+                    values = ShuffledIterable(values, options["seed"] + epoch, options["buffer_size"])
             elif operation.name == "normalize":
-                values = _Map(values, _Normalize(**options))
+                values = mapped(values, _Normalize(**options))
             elif operation.name == "tokenize":
-                values = _Map(values, _Tokenize(**options))
+                values = mapped(values, _Tokenize(**options))
             else:
                 raise UnsupportedFeatureError(f"Data operation {operation.name!r} is not supported.")
-        return values
+        if not batched and workers:
+            return DataLoader(
+                values, batch_size=None, collate_fn=_identity, num_workers=workers,
+                generator=torch.Generator().manual_seed(epoch % (2**64)),
+                **({"prefetch_factor": prefetch} if prefetch is not None else {}),
+            )
+        return DatasetIterable(values) if map_style(values) else values
 
     def __iter__(self) -> Iterator:
         return iter(self.build())
@@ -391,14 +409,22 @@ class DataPipeline:
     def __len__(self) -> int:
         if self.source.kind not in {"native", "memory", "paired", "indexed"}:
             raise TypeError("This pipeline's length is available only after building its source.")
+        if any(operation.name == "filter" for operation in self._operations):
+            raise TypeError("A filtered pipeline has unknown length until consumed.")
         count = _length(materialize_source(self.source))
-        if count is None:
-            raise TypeError("This data source does not provide a length.")
         for operation in self._operations:
             if operation.name == "batch":
                 options = dict(operation.options)
+                if options["sampler"] is not None:
+                    count = _length(options["sampler"])
+                    if count is None:
+                        raise TypeError("This sampler does not provide a length.")
+                if count is None:
+                    raise TypeError("This data source does not provide a length.")
                 size = options["size"]
                 count = count // size if options["drop_last"] else (count + size - 1) // size
+        if count is None:
+            raise TypeError("This data source does not provide a length.")
         return count
 
     def to_spec(self, encode: Callable[[Any], Any]) -> dict[str, Any]:
@@ -408,7 +434,7 @@ class DataPipeline:
         native objects. Neither factories nor map functions are invoked here.
         """
         return {
-            "version": 1,
+            "version": 2,
             "source": {
                 "kind": self.source.kind,
                 "value": encode(self.source.value),
@@ -436,7 +462,7 @@ class DataPipeline:
             or set(spec) != {"version", "source", "operations", "loader"}
         ):
             raise ConfigurationError("A data pipeline specification needs version, source, operations, and loader.")
-        if type(spec["version"]) is not int or spec["version"] != 1:
+        if type(spec["version"]) is not int or spec["version"] not in {1, 2}:
             raise UnsupportedFeatureError("Unsupported data pipeline specification version.")
         source = spec["source"]
         if (
@@ -473,8 +499,12 @@ class DataPipeline:
             raise ConfigurationError("Data operations must be an ordered list.")
         required = {
             "map": {"function"},
+            "transform": {"function"},
+            "filter": {"function"},
             "shuffle": {"seed", "buffer_size"},
-            "batch": {"size", "drop_last", "collate_fn"},
+            "batch": {"size", "drop_last", "collate_fn"} if spec["version"] == 1 else {
+                "size", "drop_last", "collate_fn", "shuffle", "workers", "prefetch", "sampler", "pin_memory", "normalize"
+            },
             "normalize": {"mean", "std", "dim", "key"},
             "tokenize": {"tokenizer", "key"},
         }
@@ -490,7 +520,10 @@ class DataPipeline:
             options = operation["options"]
             if not isinstance(options, Mapping) or set(options) != required[name]:
                 raise ConfigurationError(f"Invalid options for data operation {name!r}.")
-            result = getattr(result, name)(**{key: decode(value) for key, value in options.items()})
+            decoded = {key: decode(value) for key, value in options.items()}
+            if spec["version"] == 1 and name == "batch":
+                decoded["normalize"] = False
+            result = getattr(result, name)(**decoded)
         loader = spec["loader"]
         if (
             not isinstance(loader, Mapping)
@@ -499,12 +532,18 @@ class DataPipeline:
             raise ConfigurationError("Invalid loader specification.")
         if not isinstance(loader["configured"], bool):
             raise ConfigurationError("Loader configured flag must be a boolean.")
-        _integer(loader["workers"], "worker count")
+        if loader["workers"] is not None:
+            _integer(loader["workers"], "worker count")
+        elif spec["version"] == 1:
+            raise ConfigurationError("Version 1 worker count must be an integer.")
         if loader["prefetch_factor"] is not None:
             _integer(loader["prefetch_factor"], "prefetch_factor", minimum=1)
         if loader["configured"]:
-            result = result.workers(loader["workers"], prefetch_factor=loader["prefetch_factor"])
-        elif loader["workers"] != 0 or loader["prefetch_factor"] is not None:
+            if loader["workers"] is not None:
+                result = result.workers(loader["workers"])
+            if loader["prefetch_factor"] is not None:
+                result = result.prefetch(loader["prefetch_factor"])
+        elif loader["workers"] not in {None, 0} or loader["prefetch_factor"] is not None:
             raise ConfigurationError("Unconfigured loader specifications cannot include worker options.")
         return result
 

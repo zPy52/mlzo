@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from mlzo.errors import ConfigurationError, MLZOError, UnsupportedFeatureError
+from mlzo.transforms.tensor import Tensor
 
 from .artifact import _load_artifact
 
@@ -16,6 +17,8 @@ from .artifact import _load_artifact
 def _move_inputs(value: Any, device: torch.device, *, active: set[int] | None = None, depth: int = 0) -> Any:
     if depth > 64:
         raise ConfigurationError("Prediction input nesting exceeds 64 levels.")
+    if isinstance(value, Tensor):
+        value = value.raw
     if isinstance(value, torch.Tensor):
         return value.to(device)
     if not isinstance(value, (dict, list, tuple)):
@@ -45,7 +48,8 @@ class Deployment:
     """A loaded local artifact with synchronous, serialized predict calls.
 
     Tensors in ordinary dictionaries, lists, tuples, and namedtuples move to the
-    configured device. Other values pass through for the model to validate.
+    configured device. MLZO tensor leaves unwrap without reshaping. Other
+    values pass through for the model to validate.
     Outputs retain the model's ordinary types and device. Shutdown releases this
     deployment's model reference, and never changes process-wide device caches.
     """

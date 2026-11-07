@@ -9,6 +9,7 @@ from torch import compile as jit
 from torch.func import functional_call, grad, hessian, jacfwd, jacrev, jvp, vjp, vmap
 
 from .named import NamedTensor, tensor
+from .tensor import Tensor, wrap
 
 __all__ = [
     "grad",
@@ -21,5 +22,7 @@ __all__ = [
     "functional_call",
     "jit",
     "tensor",
+    "Tensor",
+    "wrap",
     "NamedTensor",
 ]

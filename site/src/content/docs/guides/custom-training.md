@@ -20,6 +20,8 @@ class ClassifierTraining(mlzo.Training):
 
     def step(self, batch):
         inputs, targets = batch
+        # Native cross entropy requires class indices shaped (B,).
+        targets = targets.squeeze(1)
         loss = F.cross_entropy(self.model(inputs), targets)
         self.update("classifier", loss)
         self.state["examples_seen"] += len(inputs)
@@ -27,13 +29,14 @@ class ClassifierTraining(mlzo.Training):
 
     def evaluate(self, batch):
         inputs, targets = batch
+        targets = targets.squeeze(1)
         return mlzo.Step(loss=F.cross_entropy(self.model(inputs), targets),
                          weight=len(targets))
 
 generator = torch.Generator().manual_seed(7)
 inputs = torch.randn(32, 4, generator=generator)
 targets = (inputs.sum(dim=1) > 0).long()
-batches = mlzo.data(torch.utils.data.TensorDataset(inputs, targets)).batch(8)
+batches = mlzo.data(inputs, targets).batch(8)
 algorithm = ClassifierTraining()
 run = mlzo.train(algorithm, batches,
                  optimizer={"classifier": mlzo.opt("sgd", lr=0.1)}, seed=7)

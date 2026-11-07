@@ -18,12 +18,13 @@ from torch import nn
 generator = torch.Generator().manual_seed(7)
 inputs = torch.randn(64, 4, generator=generator)
 targets = (inputs.sum(dim=1) > 0).long()
-samples = torch.utils.data.TensorDataset(inputs, targets)
-batches = mlzo.data(samples).shuffle(seed=7).batch(16)
+batches = mlzo.data(inputs, targets).shuffle(seed=7).batch(16)
 output = Path(tempfile.mkdtemp(prefix="mlzo-quickstart-"))
 ```
 
-Each batch contains inputs of shape `[16, 4]` and integer targets of shape `[16]`. A fresh output directory keeps these artifacts separate from earlier runs.
+Each batch contains inputs of shape `[16, 4]` and integer targets of shape `[16, 1]`.
+The supervised cross-entropy adapter handles those column labels. A fresh output
+directory keeps these artifacts separate from earlier runs.
 
 ## Describe and inspect
 

@@ -28,8 +28,7 @@ from torch import nn
 import mlzo
 x = torch.randn(64, 4)
 y = (x.sum(dim=1) > 0).long()
-samples = torch.utils.data.TensorDataset(x, y)
-batches = mlzo.data(samples).batch(16)
+batches = mlzo.data(x, y).batch(16)
 run = mlzo.train(mlzo.Lazy(nn.Linear, 4, 2), batches, loss="cross_entropy", seed=7)
 print(run.plan(on="cpu").explain())
 history = run.fit(epochs=2, on="cpu")
@@ -48,6 +47,43 @@ with mlzo.deploy(artifact, device="cpu") as predictor:
 ```
 
 Checkpoints support local full-state storage and epoch-restart resume. Inference artifacts contain weights and, when available, an importable construction recipe. Use a new export directory for changed weights.
+
+## Tensors and data sources
+
+`mlzo.tensor(values)` returns a lightweight `Tensor` wrapper. Scalars become
+`(1, 1)` and vectors become `(N, 1)` by default. Reductions preserve dimensions,
+and basic integer indexing uses singleton slices. Explicit shape operations
+keep their requested shape. Use `normalize=False` to retain a native input
+shape, `mlzo.wrap(native)` to preserve an existing tensor's shape and identity,
+and `.raw` for direct PyTorch calls. Optional axis names produce `NamedTensor`.
+See [tensor conventions and migration](src/mlzo/transforms/README.md).
+
+```python
+vector = mlzo.tensor([1., 2., 3.], normalize=False)
+assert vector.shape == (3,)
+native = vector.raw
+matrix = mlzo.tensor([[1, 2], [3, 4]])
+assert matrix.mean(axis=1).raw.tolist() == [[1.5], [3.5]]
+indexed = mlzo.data(get=lambda i: (x[i], y[i]), length=len(x)).batch(16)
+```
+
+Integer and boolean `mean()` inputs use `torch.get_default_dtype()` when `dtype`
+is omitted or `None`. Construction and sums retain their native dtype. Explicit
+mean dtypes and floating/complex inputs follow PyTorch; `.raw.mean()` stays native.
+
+`data(x, y)` pairs columns without a dataset subclass. `get=...` with `length=...`
+defines indexed samples; `stream=...` supplies a fresh iterable per pass.
+Pipelines also accept native datasets/loaders, sequences, paths, and factories.
+`transform` operates on samples before batching; `map` operates on current items,
+including batches. Default batches contain native tensor leaves, with feature
+vectors stacked as `(B, F)` and scalar labels as `(B, 1)`. Use
+`batch(..., normalize=False)` for native batch shapes. See [data details](src/mlzo/data/README.md)
+for workers, custom collation, streams, and advanced DataLoader options.
+
+Buffered shuffle of indexed data uses native worker-local batches. Pipeline and
+built-loader lengths count each worker's partial batch and `drop_last` behavior.
+Unknown-length streams, filters, and native iterable sources with unknown worker
+shards require `fit(steps=...)`; epoch-only training requires a known batch count.
 
 ## Examples and commands
 

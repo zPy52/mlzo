@@ -26,9 +26,80 @@ Built-in supervised losses include `cross_entropy` and `mse`. For other batch st
 
 Optimizer specs support stable parameter selectors such as `mlzo.opt("sgd", params="encoder", lr=0.01)`. `mlzo.schedules` offers constant, linear, cosine, and exponential schedules, which advance on successful optimizer updates. Explicit named updates require `accumulate=1`. `grad`, `vmap`, `jacrev`, other transforms, and `jit` preserve their PyTorch semantics.
 
+## Tensor shapes and native boundaries
+
+`mlzo.tensor(values)` returns `Tensor`, or `NamedTensor` with `axes=...`.
+Construction uses `torch.as_tensor`; scalars normalize to `(1, 1)`, and vectors
+to `(N, 1)`. `normalize=False` preserves the input rank. `mlzo.wrap(native)`
+retains the native tensor's shape and identity, and `.raw` exposes it explicitly.
+Reductions default to `keepdims=True`; wholly basic integer indexing keeps
+singleton dimensions. Advanced/boolean indices use whole-index native semantics.
+Explicit reshape, flatten, and singleton removal keep their result shape.
+
+```python
+column = mlzo.tensor([1., 2., 3.])
+vector = mlzo.tensor([1., 2., 3.], axes=("feature",), normalize=False)
+assert column.shape == (3, 1)
+assert vector.shape == (3,)
+native_vector = vector.raw
+```
+
+Axis names must match the final normalized shape. The wrapper exposes a limited
+set of methods and has no transparent torch dispatch. Native modules, optimizers,
+function transforms, and compiled regions use `.raw`. MLZO training and deployment
+unwrap leaves at their own boundaries without reshaping; `fit(on=...)` transfers
+batches. Code that expected the previous native default can use
+`mlzo.tensor(values, normalize=False).raw`. Named reductions that previously
+dropped axes now need `keepdims=False`. See [tensor details and migration](../src/mlzo/transforms/README.md).
+
+The supervised `loss="cross_entropy"` adapter, also used for supported
+`nn.CrossEntropyLoss` instances passed as `loss=`, squeezes only integral `(B, 1)`
+class targets for `(B, C)` logits. Dense and probability targets keep their shapes,
+and dtypes are not coerced. Custom losses and direct native loss calls keep the
+supplied target shape; use `target.squeeze(1)` explicitly in a custom classification
+step when needed. There is no separate `mlzo.loss` constructor.
+
 ## Data, checkpoints, and inference
 
-`data(...)` accepts native local datasets/loaders, sequences, supported file paths, or factories. Pipeline operations run in declared order; applying `map` after `batch` transforms a batch. Local JSON/JSONL and restricted tensor files are supported. Image directories require explicit label mode and the `vision` extra. S3 dataset reads require a specific object path and the `s3` extra. See [data details](../src/mlzo/data/README.md) for formats and worker limits.
+`data(X, y)` pairs equally sized columns. `data(get=fn, length=N)` defines
+indexed samples without a subclass, and `data(stream=factory)` defines a fresh
+finite or infinite iterable per pass. Existing datasets/loaders, sequences,
+paths, and zero-argument source factories remain supported. A single sequence
+of sample pairs stays row-major. Construction does not call user sample functions
+or consume data; build opens the source, and iteration requests samples.
+
+`transform(fn)` operates on samples before batching, while `map(fn)` operates
+on the current items, including batches. `filter(fn)` is lazy and makes length
+unknown. Default batching produces native tensor leaves, normalizing only after
+collation: feature vectors become `(B, F)`, and scalar labels become `(B, 1)`.
+Use `batch(..., normalize=False)` for native shapes or `combine=fn` for exact
+custom shapes. The legacy `collate_fn` spelling remains supported.
+
+```python
+import torch
+
+X = torch.randn(16, 4)
+y = (X.sum(dim=1) > 0).long()
+train_data = mlzo.data(X, y).batch(4)
+classifier = mlzo.train(mlzo.Lazy(nn.Linear, 4, 2), train_data,
+                        loss="cross_entropy")
+classifier.fit(epochs=1, on="cpu")
+```
+
+`batch(64, shuffle=True, workers=4, prefetch=2)` uses native worker batching;
+prefetch counts batches per worker. `sampler` conflicts with shuffle. Construct a
+native `DataLoader` first and pass it to `data(loader)` for advanced options such
+as `batch_sampler`. A no-operation build returns the original loader; MLZO does
+not silently reconfigure it. Buffered shuffle accepts `buffer` and the legacy
+`buffer_size` alias, uses `seed + epoch`, and is bounded rather than a uniform
+full permutation. Multiworker stream factories need an importable deterministic
+factory with `mlzo_replayable=True` for strided sharding. Native IterableDataset
+authors own worker sharding. Infinite streams need a step budget.
+
+Local JSON/JSONL and restricted tensor files remain supported. Image directories
+require explicit label mode and the `vision` extra. S3 reads require one object
+path and the `s3` extra. See [data details](../src/mlzo/data/README.md) for loading
+boundaries and examples.
 
 ```python
 policy = mlzo.checkpoint("outputs/checkpoints", every=100, keep_last=3)

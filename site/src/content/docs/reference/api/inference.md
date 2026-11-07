@@ -95,7 +95,7 @@ mlzo.Deployment(artifact: Any, *, device: str | torch.device='cpu', factory: Any
 
 A synchronous predictor in the current process. Use `deploy()` or its context manager to load and release the model.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/inference/deployment.py#L44).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/inference/deployment.py#L47).
 
 ### Deployment.device
 
@@ -111,7 +111,7 @@ Returns the device used by this local predictor.
 Deployment.predict(*args: Any, **kwargs: Any) -> Any
 ```
 
-Moves nested tensor inputs to the configured device and predicts in eval mode under `torch.inference_mode()`. Raises after shutdown.
+Unwraps nested MLZO tensor leaves without reshaping, moves native tensors to the configured device, and predicts in eval mode under `torch.inference_mode()`. Raises after shutdown.
 
 ### Deployment.status
 
@@ -146,4 +146,4 @@ Load a local deployment, using CPU unless device is explicitly supplied.
 `on` is reserved for remote placement. Any non-None target, including a
 cluster handle, raises UnsupportedFeatureError in this alpha.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/inference/deployment.py#L103).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/inference/deployment.py#L107).

@@ -14,6 +14,7 @@ from typing import Any
 import torch
 
 from mlzo.errors import ConfigurationError, TrainingError, UnsupportedFeatureError
+from mlzo.transforms.tensor import Tensor
 
 _EXECUTION_LOCK = Lock()
 
@@ -51,6 +52,13 @@ def execution_settings(matmul: str):
 
 
 def move_batch(value: Any, device: torch.device) -> Any:
+    """Move native leaves and unwrap MLZO tensors without reshaping or detaching.
+
+    Training callbacks and native modules receive ordinary PyTorch tensors;
+    wrapper axis metadata does not participate in native execution.
+    """
+    if isinstance(value, Tensor):
+        value = value.raw
     if isinstance(value, torch.Tensor):
         return value.to(device)
     if isinstance(value, Mapping):

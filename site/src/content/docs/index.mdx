@@ -18,7 +18,7 @@ from torch import nn
 
 inputs = torch.randn(64, 4)
 targets = (inputs.sum(dim=1) > 0).long()
-batches = mlzo.data(torch.utils.data.TensorDataset(inputs, targets)).batch(16)
+batches = mlzo.data(inputs, targets).batch(16)
 
 run = mlzo.train(mlzo.Lazy(nn.Linear, 4, 2), batches,
                  loss="cross_entropy", seed=7)

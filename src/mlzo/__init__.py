@@ -35,6 +35,7 @@ from .data import DataPipeline, data, images
 from . import transforms
 from .transforms import (
     NamedTensor,
+    Tensor,
     functional_call,
     grad,
     hessian,
@@ -45,6 +46,7 @@ from .transforms import (
     tensor,
     vjp,
     vmap,
+    wrap,
 )
 from .checkpoint import (
     CheckpointPolicy,
@@ -63,7 +65,7 @@ __all__ = [
     "opt", "OptimizerSpec", "schedules", "ScheduleSpec", "constant", "linear",
     "cosine", "exponential", "Lazy", "materialize", "place", "FactoryRef",
     "data", "DataPipeline", "images", "transforms", "grad", "vmap", "jacrev", "jacfwd",
-    "hessian", "jvp", "vjp", "functional_call", "jit", "tensor", "NamedTensor",
+    "hessian", "jvp", "vjp", "functional_call", "jit", "tensor", "Tensor", "NamedTensor", "wrap",
     "checkpoint", "CheckpointPolicy", "CheckpointRef", "save_snapshot",
     "load_snapshot", "list_snapshots", "cluster", "Cluster", "Invitation",
     "Coordinator", "Worker", "worker", "run", "ArtifactRef", "Deployment", "export_model",

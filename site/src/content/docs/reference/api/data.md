@@ -8,12 +8,25 @@ Read the [data pipelines guide](../../../guides/data/) for examples and usage co
 ## data
 
 ```python
-mlzo.data(source: Any) -> DataPipeline
+mlzo.data(
+    source: Any = None,
+    targets: Any = _MISSING,
+    *,
+    get: Callable[[int], Any] | None = None,
+    length: int | None = None,
+    stream: Callable[[], Iterable] | None = None,
+) -> DataPipeline
 ```
 
-Describe a source lazily. An existing pipeline is returned unchanged.
+Describe one source, input/target columns, an index function, or a stream.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L516).
+get and length must be supplied together. stream creates a fresh iterator
+for each pass. These modes cannot be combined. A single sequence of pairs
+remains a sequence of samples; use two arguments to describe columns.
+Existing pipelines are returned unchanged and native loaders retain their
+identity on build. No sample function or stream factory is invoked here.
+
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L588).
 
 ## images
 
@@ -29,7 +42,7 @@ mlzo.images(
 
 Describe a local image directory with an explicit label convention.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L521).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L620).
 
 ## DataPipeline
 
@@ -39,9 +52,9 @@ Declared fields:
 source: Any
 ```
 
-Immutable ordered pipeline configuration. Source objects remain caller-owned. A build opens data; construction and serialization do not.
+Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned. Known indexed worker shards have exact batch counts; arbitrary native iterable shards with multiple workers report unknown length.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L189).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L131).
 
 ### DataPipeline.map
 
@@ -51,24 +64,65 @@ DataPipeline.map(function: Callable[[Any], Any]) -> DataPipeline
 
 Apply a local callable to each current item, including batches.
 
+### DataPipeline.transform
+
+```python
+DataPipeline.transform(function: Callable[[Any], Any]) -> DataPipeline
+```
+
+Transform individual samples. After batch(), use map() instead.
+
+### DataPipeline.filter
+
+```python
+DataPipeline.filter(function: Callable[[Any], bool]) -> DataPipeline
+```
+
+Lazily retain samples with a scalar boolean predicate; length is unknown.
+
 ### DataPipeline.shuffle
 
 ```python
-DataPipeline.shuffle(seed: int, *, buffer_size: int | None=None) -> DataPipeline
+DataPipeline.shuffle(
+    seed: int = 42,
+    *,
+    buffer: int | None = None,
+    buffer_size: int | None = None,
+) -> DataPipeline
 ```
 
-Shuffle with seed + epoch. Streams require a positive buffer_size.
+Shuffle with seed + epoch. Streams need a bounded buffer.
 
-Full shuffle consumes the finite upstream sequence when iteration starts.
-Buffered shuffle uses bounded memory and is not a uniform full shuffle.
+Full indexable shuffles permute indices without reading samples. Finite
+iterable shuffles buffer samples during iteration. Buffered shuffle is
+bounded and is not a uniform full permutation. buffer_size is legacy.
 
 ### DataPipeline.batch
 
 ```python
-DataPipeline.batch(size: int, drop_last: bool=False, collate_fn: Callable | None=None) -> DataPipeline
+DataPipeline.batch(
+    size: int,
+    drop_last: bool = False,
+    collate_fn: Callable | None = None,
+    *,
+    shuffle: bool = False,
+    workers: int | None = None,
+    prefetch: int | None = None,
+    combine: Callable | None = None,
+    sampler: Any = None,
+    pin_memory: bool = False,
+    normalize: bool = True,
+) -> DataPipeline
 ```
 
-Group current items with torch default_collate or an explicit callable.
+Build batches with native DataLoader workers and collation.
+
+Default collation unwraps MLZO tensor leaves at their existing shape,
+then shapes scalar/1D batch leaves to at least two axes after stacking.
+normalize=False preserves native collated shapes. Custom combine or
+collate_fn receives original samples and preserves its exact output.
+Worker prefetch counts batches per worker. Construct a native DataLoader
+for advanced options such as batch_sampler, then pass it to data() unchanged.
 
 ### DataPipeline.workers
 
@@ -76,10 +130,7 @@ Group current items with torch default_collate or an explicit callable.
 DataPipeline.workers(count: int, *, prefetch_factor: int | None=None) -> DataPipeline
 ```
 
-Read indexable source samples in CPU workers, preserving source order.
-
-Ordered pipeline operations run in the calling process. Generic streams
-and native DataLoaders cannot be repartitioned by this alpha adapter.
+Set native loading workers. Operations before batching run there.
 
 ### DataPipeline.prefetch
 
@@ -87,7 +138,7 @@ and native DataLoaders cannot be repartitioned by this alpha adapter.
 DataPipeline.prefetch(factor: int) -> DataPipeline
 ```
 
-Set the number of source items prefetched per worker. Requires workers > 0.
+Set native prefetch_factor, counting batches per worker.
 
 ### DataPipeline.images
 
@@ -135,10 +186,13 @@ custom batch collate_fn for padding.
 DataPipeline.build(epoch: int=0) -> Iterable
 ```
 
-Rebuild on the execution worker, with shuffle seeds offset by epoch.
+Construct native loading lazily; shuffle uses seed + epoch.
 
-Reiterable sources start a new pass. A supplied one-shot iterator keeps
-its own consumed state. No exact cursor or restart guarantee is implied.
+Iterable workers batch their own shards, following native PyTorch
+semantics, including drop_last per worker. Partial epochs have no exact
+cursor replay guarantee. Generic native IterableDatasets own sharding.
+Generated loaders count known indexed shards exactly. Multiple native
+iterable workers with unknown shard sizes have no reported length.
 
 ### DataPipeline.to_spec
 
@@ -146,7 +200,7 @@ its own consumed state. No exact cursor or restart guarantee is implied.
 DataPipeline.to_spec(encode: Callable[[Any], Any]) -> dict[str, Any]
 ```
 
-Encode configuration only. The one-argument encoder handles values.
+Encode version 2 configuration. The one-argument encoder handles values.
 
 A remote encoder should reject nonimportable callables and unsupported
 native objects. Neither factories nor map functions are invoked here.
@@ -157,7 +211,7 @@ native objects. Neither factories nor map functions are invoked here.
 DataPipeline.from_spec(spec: Mapping, decode: Callable[[Any], Any]) -> DataPipeline
 ```
 
-Reconstruct configuration with a one-argument decoder, without building.
+Decode without building. Version 1 keeps legacy batch shapes and shuffle order.
 
 ### DataPipeline.local_paths
 

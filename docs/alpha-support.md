@@ -6,12 +6,21 @@
 | --- | --- | --- |
 | Training | Local CPU/device execution or one remote worker per run, supervised steps, custom `Training`, explicit named updates | No DDP, FSDP, tensor/pipeline parallelism, or multi-worker run |
 | Planning | Deferred factories, device/precision decisions, placement checks | No forward execution, activation/memory probing, or automatic partitioning |
-| Data | Native local sources, importable factories, JSON/JSONL, restricted tensor files, explicit image directories, optional S3 objects | No distributed sharding or exact arbitrary-iterator cursor resume |
+| Tensors | Explicit `Tensor`/`NamedTensor` wrappers, matrix defaults for scalars/vectors, dimension-preserving reductions/basic indexing, `.raw` and shape-preserving `wrap` | Limited methods, no transparent torch dispatch; native modules/optimizers/transforms/compile use `.raw` |
+| Data | Paired columns, `get`/`length`, finite/infinite stream factories, native sources, ordered transforms/filter/map, native worker batching, JSON/JSONL, restricted tensor files, explicit images, optional S3 objects | Multiworker stream factories require deterministic replay opt-in; IterableDataset authors own sharding; no distributed sharding or exact cursor resume |
 | Checkpoints | Full local snapshots, checksums, atomic manifests, retention, compatible state restore | No S3 storage, per-block/sharded state, automatic recovery, or generation fencing |
 | Resume | Local restoration of model/optimizer/scheduler/RNG/algorithm state and counters | Partial epochs restart; no exact sampler/worker replay; one-shot sources and remote resume unsupported |
 | Cluster | Authenticated coordinator, expiring invitations, persistent scoped worker identity, source snapshots, scalar events, reconnect/cancel, completed-run checkpoints/exports | Trusted single-owner operation, one job/device per worker, no managed provisioning, HA scheduling, or automatic worker-failure recovery |
 | Inference | Immutable local artifacts, strict weight loading, local synchronous prediction | No remote inference server or autoscaling; weights-only exports need a factory |
 | Recipes | Single-environment DQN with bounded replay and target updates | Discrete actions and vector observations only; environment resets on resume; no PPO, vector environments, or distributed rollouts |
+
+Default batch outputs are native tensor leaves. Normalization happens after
+collation, so vector features remain `(B, F)` and scalar labels become `(B, 1)`.
+`normalize=False` keeps native batch shapes, and custom `combine`/`collate_fn`
+outputs keep exact shapes. Existing loaders are not silently reconfigured.
+The supervised cross-entropy adapter squeezes integral `(B, 1)` targets only for
+`(B, C)` logits; dense/probability targets and custom losses retain their shapes.
+Training and deployment unwrap MLZO tensor leaves without reshaping them.
 
 Python 3.12+ and PyTorch `>=2.2.2,<3` are declared requirements. The Intel macOS environment uses the legacy 2.2.2 wheel with NumPy below 2. Other platforms do not receive that NumPy upper bound. This is not a claim that the full Python/PyTorch range works. Optional Pillow, boto3, and Gymnasium imports happen on use. The worker supervisor requires POSIX process groups and file locking.
 

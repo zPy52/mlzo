@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import random
+import sys
 from collections.abc import Mapping, MutableMapping
 from itertools import islice
 from typing import Any
@@ -135,7 +136,8 @@ class FilteredIterable(IterableView):
                 result = result.item()
             # NumPy boolean scalars implement __bool__, but integers and arrays
             # must not pass as predicates merely because bool(value) works.
-            if type(result).__module__ == "numpy" and type(result).__name__ == "bool_":
+            numpy = sys.modules.get("numpy")
+            if numpy is not None and isinstance(result, numpy.bool_):
                 result = bool(result)
             if not isinstance(result, bool):
                 raise ConfigurationError("filter() requires a scalar boolean predicate result.")

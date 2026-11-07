@@ -27,7 +27,7 @@ vision = ["Pillow"]
 s3 = ["boto3"]
 rl = ["gymnasium"]
 dev = ["build", "twine"]
-test = ["pytest>=8,<9", "pytest-timeout>=2.3,<3"]
+test = ["numpy", "pytest>=8,<9", "pytest-timeout>=2.3,<3"]
 
 [project.scripts]
 mlzo = "mlzo.cli.main:main"

@@ -28,6 +28,10 @@ Optimizer specs support stable parameter selectors such as `mlzo.opt("sgd", para
 
 ## Tensor shapes and native boundaries
 
+The [tensor and data use cases](https://zpy52.github.io/mlzo/start/tensors-and-data/)
+walk through small CPU examples, including a classifier, streams, custom
+collation, and a standalone worker script.
+
 `mlzo.tensor(values)` returns `Tensor`, or `NamedTensor` with `axes=...`.
 Construction uses `torch.as_tensor`; scalars normalize to `(1, 1)`, and vectors
 to `(N, 1)`. `normalize=False` preserves the input rank. `mlzo.wrap(native)`

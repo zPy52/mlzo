@@ -10,7 +10,7 @@ DOCS = Path(__file__).resolve().parents[1] / "src/content/docs"
 
 
 def main():
-    for name in ("start/quickstart.md", "guides/custom-training.md", "guides/transforms.md", "guides/data.md"):
+    for name in ("start/quickstart.md", "start/tensors-and-data.md", "guides/custom-training.md", "guides/transforms.md", "guides/data.md"):
         # Optional image inputs and multiprocessing scripts use python no-exec.
         code = "\n\n".join(re.findall(r"^```python\n(.*?)^```", (DOCS / name).read_text(), re.M | re.S))
         if not code:

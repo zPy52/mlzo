@@ -3,6 +3,9 @@ title: Data pipelines
 description: Declare paired, indexed, or streaming sources and configure ordered native worker batching.
 ---
 
+For small examples you can run in order, start with
+[tensor and data use cases](../../start/tensors-and-data/).
+
 `ml.data(...)` records immutable, ordered pipeline configuration. Each chained
 method returns a new pipeline. Construction and serialization do not invoke
 factories, call `get`, iterate samples, read files, decode images, or contact S3.

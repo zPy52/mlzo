@@ -51,6 +51,7 @@ Pages' source to GitHub Actions. Keep that switch separate from content edits.
 `check:reference` detects stale generated pages and missing public exports.
 `check` validates Astro/TypeScript. `build` generates the static site and search
 index. `check:links` checks built page URLs, fragments, assets, and base-path
-containment. The docs workflow also executes the ordered quickstart and custom
-algorithm snippets using CPU PyTorch, so the first-run instructions remain
-executable. These checks do not validate remote hosts, GPU training, or TLS.
+containment. The docs workflow also executes the ordered quickstart, tensor and
+data use cases, custom algorithm, transform, and data pipeline snippets using CPU
+PyTorch. Worker scripts marked `python no-exec` require a separate script run.
+These checks do not validate remote hosts, GPU training, or TLS.

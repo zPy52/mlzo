@@ -79,3 +79,6 @@ with mlzo.deploy(artifact, device="cpu") as predictor:
 ```
 
 The artifact stores inference weights and an importable `nn.Linear` construction recipe. It is separate from the resumable checkpoint. `deploy()` loads a synchronous predictor in this process; it does not start a server. See [checkpoints](../../guides/checkpoints/) and [inference artifacts](../../guides/inference/) for the storage contracts.
+
+Continue with [tensor and data use cases](../tensors-and-data/) to use tensor
+wrappers, custom sample functions, streams, padding, and worker loading.

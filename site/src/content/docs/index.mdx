@@ -1,0 +1,54 @@
+---
+title: Train with PyTorch. Decide where later.
+description: Learn MLZO, from your first deferred CPU run to checkpoints and single-worker remote execution.
+tableOfContents: false
+---
+
+<p class="kicker">MLZO documentation / 0.1.0a1</p>
+<p class="intro">Describe a learning program in Python, inspect its plan, then run it on one local device or an enrolled remote worker. Keep your PyTorch models, losses, and optimizers.</p>
+
+<div class="flow" aria-label="The MLZO workflow">
+  Describe <span aria-hidden="true">→</span> Plan <span aria-hidden="true">→</span> Train <span aria-hidden="true">→</span> Checkpoint or export
+</div>
+
+```python title="Your first deferred run"
+import mlzo
+import torch
+from torch import nn
+
+inputs = torch.randn(64, 4)
+targets = (inputs.sum(dim=1) > 0).long()
+batches = mlzo.data(torch.utils.data.TensorDataset(inputs, targets)).batch(16)
+
+run = mlzo.train(mlzo.Lazy(nn.Linear, 4, 2), batches,
+                 loss="cross_entropy", seed=7)
+print(run.plan(on="cpu").explain())
+history = run.fit(epochs=2, on="cpu")
+```
+
+`Lazy` stores a construction recipe. `train()` records configuration, and `plan()` inspects it without building the model or reading batches. `fit()` constructs the model, binds the optimizer, and executes training.
+
+<nav class="path-grid" aria-label="Explore the documentation">
+  <a class="path-card" href={`${import.meta.env.BASE_URL}start/quickstart/`}>
+    <span class="number">01 / FIRST RUN</span><strong>Build a small classifier ↗</strong>
+    <span>Install MLZO, train on synthetic data, save a checkpoint, and make a prediction.</span>
+  </a>
+  <a class="path-card" href={`${import.meta.env.BASE_URL}guides/custom-training/`}>
+    <span class="number">02 / YOUR ALGORITHM</span><strong>Write the training step ↗</strong>
+    <span>Use custom losses, weighted accumulation, and explicit named optimizer updates.</span>
+  </a>
+  <a class="path-card" href={`${import.meta.env.BASE_URL}remote/setup/`}>
+    <span class="number">03 / ANOTHER WORKER</span><strong>Run on an enrolled machine ↗</strong>
+    <span>Start a coordinator, enroll a worker, submit importable code, and reconnect to a run.</span>
+  </a>
+  <a class="path-card" href={`${import.meta.env.BASE_URL}reference/api/training/`}>
+    <span class="number">04 / LOOK IT UP</span><strong>Read the Python reference ↗</strong>
+    <span>Find public functions, exact signatures, class methods, and links to their implementation.</span>
+  </a>
+</nav>
+
+## Read this as an alpha
+
+This documentation describes the implemented `0.1.0a1` release. Training uses one device or one worker per run. Checkpoints and inference artifacts use local filesystems. Distributed training, managed provisioning, automatic recovery, and remote inference are future work.
+
+Start with the [core concepts](./start/concepts/) or check the [support matrix](./help/support/) before choosing a deployment. The [release notes](./help/release/) explain what is available and how the current CPU tests exercise it.

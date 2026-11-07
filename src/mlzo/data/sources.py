@@ -5,18 +5,22 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import operator
 import os
-from collections.abc import Iterable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from mlzo.errors import ConfigurationError, UnsupportedFeatureError
+from mlzo.transforms.named import NamedTensor
 
 
 FILE_SUFFIXES = {".json", ".jsonl", ".pt", ".pth"}
@@ -28,6 +32,67 @@ class Source:
     kind: str
     value: Any
     options: tuple[tuple[str, Any], ...] = ()
+
+
+def _raw_column(value: Any) -> Any:
+    return value.raw if isinstance(value, NamedTensor) else value
+
+
+def _is_numpy_array(value: Any) -> bool:
+    # An existing ndarray's module is already loaded. Do not require NumPy for
+    # Python collections, tensors, or applications that never use arrays.
+    numpy = sys.modules.get("numpy")
+    return numpy is not None and isinstance(value, numpy.ndarray)
+
+
+def _is_column(value: Any) -> bool:
+    return (
+        isinstance(value, (torch.Tensor, Sequence)) or _is_numpy_array(value)
+    ) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _column_length(value: Any) -> int:
+    value = _raw_column(value)
+    if not _is_column(value):
+        raise ConfigurationError("Data columns must be tensors, NumPy arrays, or sequences.")
+    if (isinstance(value, torch.Tensor) or _is_numpy_array(value)) and value.ndim == 0:
+        raise ConfigurationError("Each data column needs a leading sample dimension.")
+    return len(value)
+
+
+def _validate_callable(function: Any, arguments: tuple, name: str) -> None:
+    if (
+        not callable(function)
+        or inspect.iscoroutinefunction(function)
+        or inspect.isasyncgenfunction(function)
+        or inspect.iscoroutinefunction(getattr(function, "__call__", None))
+        or inspect.isasyncgenfunction(getattr(function, "__call__", None))
+    ):
+        raise ConfigurationError(f"{name} must be a synchronous callable.")
+    try:
+        inspect.signature(function).bind(*arguments)
+    except (TypeError, ValueError) as exc:
+        signature = "one positional index" if arguments else "zero arguments"
+        raise ConfigurationError(f"{name} must accept {signature}.") from exc
+
+
+def paired_source(inputs: Any, targets: Any) -> Source:
+    inputs, targets = _raw_column(inputs), _raw_column(targets)
+    if _column_length(inputs) != _column_length(targets):
+        raise ConfigurationError("Inputs and targets must have the same number of samples.")
+    return Source("paired", inputs, (("targets", targets),))
+
+
+def indexed_source(get: Callable, length: int) -> Source:
+    _validate_callable(get, (0,), "get")
+    if isinstance(length, bool) or not isinstance(length, int) or not 0 <= length <= sys.maxsize:
+        raise ConfigurationError(f"length must be a nonnegative integer <= {sys.maxsize}.")
+    return Source("indexed", get, (("length", length),))
+
+
+def stream_source(factory: Callable) -> Source:
+    _validate_callable(factory, (), "stream factory")
+    return Source("stream", factory)
 
 
 def path_string(value: Any) -> str:
@@ -63,6 +128,7 @@ def validate_s3_file(path: str) -> None:
 def describe_source(value: Any) -> Source:
     if isinstance(value, Source):
         return value
+    value = _raw_column(value)
     if isinstance(value, (str, os.PathLike)):
         path = path_string(value)
         if is_s3(path):
@@ -71,15 +137,9 @@ def describe_source(value: Any) -> Source:
     if isinstance(value, (DataLoader, Dataset)):
         return Source("native", value)
     if callable(value):
-        try:
-            inspect.signature(value).bind()
-        except (TypeError, ValueError) as exc:
-            raise ConfigurationError(
-                "A dataset factory must accept zero arguments. Use a named factory "
-                "in an importable module for remote runs."
-            ) from exc
+        _validate_callable(value, (), "A dataset factory")
         return Source("factory", value)
-    if isinstance(value, (torch.Tensor, Mapping, Sequence, Iterable)):
+    if isinstance(value, (torch.Tensor, Mapping, Sequence, Iterable)) or _is_numpy_array(value):
         return Source("memory", value)
     raise UnsupportedFeatureError(
         "Data sources must be native datasets/loaders, iterable collections, "
@@ -88,16 +148,84 @@ def describe_source(value: Any) -> Source:
 
 
 class SequenceDataset(Dataset):
-    def __init__(self, values: Sequence | torch.Tensor):
-        if isinstance(values, torch.Tensor) and values.ndim == 0:
-            raise ConfigurationError("A tensor data source needs a leading sample dimension.")
-        self.values = values
+    def __init__(self, values: Any):
+        _column_length(values)
+        self.values = _raw_column(values)
 
     def __len__(self) -> int:
         return len(self.values)
 
     def __getitem__(self, index: int) -> Any:
         return self.values[index]
+
+
+class PairedDataset(Dataset):
+    """Sample corresponding input/target columns without reshaping or copying."""
+
+    def __init__(self, inputs: Any, targets: Any):
+        source = paired_source(inputs, targets)
+        self.inputs = source.value
+        self.targets = dict(source.options)["targets"]
+
+    def __len__(self) -> int:
+        return len(self.inputs)
+
+    def __getitem__(self, index: int) -> tuple[Any, Any]:
+        index = operator.index(index)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.inputs[index], self.targets[index]
+
+
+class FunctionDataset(Dataset):
+    """A finite index function, including functions that never raise IndexError."""
+
+    def __init__(self, get: Callable, length: int):
+        source = indexed_source(get, length)
+        self.get = source.value
+        self.length = length
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, index: int) -> Any:
+        index = operator.index(index)
+        if not 0 <= index < self.length:
+            raise IndexError(index)
+        return self.get(index)
+
+
+class StreamDataset(IterableDataset):
+    """Restart a zero-argument factory on every iteration, without requiring len.
+
+    Multiple workers require factory.mlzo_replayable = True. This explicit
+    promise means each worker sees the same samples in the same order, with no
+    destructive reads or worker-dependent randomness. Workers replay the stream
+    and keep disjoint strided positions. Live feeds, shared cursors, and random
+    factories without this guarantee must use one process or a native dataset
+    implementing its own sharding. No distributed sharding is implied.
+    """
+
+    def __init__(self, factory: Callable):
+        self.factory = stream_source(factory).value
+
+    def __iter__(self) -> Iterator:
+        worker = get_worker_info()
+        if worker is not None and worker.num_workers > 1:
+            if getattr(self.factory, "mlzo_replayable", False) is not True:
+                raise UnsupportedFeatureError(
+                    "Multiple stream workers require factory.mlzo_replayable = True. "
+                    "Declare this only for deterministic replayable streams, or use "
+                    "a native IterableDataset with explicit sharding."
+                )
+        values = self.factory()
+        try:
+            iterator = iter(values)
+        except TypeError as exc:
+            raise ConfigurationError("A stream factory must return an iterable.") from exc
+        if worker is None:
+            return iterator
+        return islice(iterator, worker.id, None, worker.num_workers)
 
 
 class ColumnsDataset(Dataset):
@@ -108,14 +236,9 @@ class ColumnsDataset(Dataset):
             raise ConfigurationError("Column data needs a nonempty mapping with string keys.")
         lengths = []
         for value in columns.values():
-            if isinstance(value, torch.Tensor):
-                if value.ndim == 0:
-                    raise ConfigurationError("Each tensor column needs a sample dimension.")
-            elif tensors_only or not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-                raise ConfigurationError(
-                    "Columns must be tensors or sequences; tensor files require tensor columns."
-                )
-            lengths.append(len(value))
+            if tensors_only and not isinstance(value, torch.Tensor):
+                raise ConfigurationError("Tensor files require tensor columns.")
+            lengths.append(_column_length(value))
         if len(set(lengths)) != 1:
             raise ConfigurationError("Every data column must have the same number of samples.")
         self.columns = columns
@@ -125,7 +248,7 @@ class ColumnsDataset(Dataset):
         return self.length
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        return {key: value[index] for key, value in self.columns.items()}
+        return {key: _raw_column(value)[index] for key, value in self.columns.items()}
 
 
 @dataclass(frozen=True)
@@ -142,9 +265,10 @@ class DatasetIterable:
 
 
 def adapt_values(value: Any) -> Any:
+    value = _raw_column(value)
     if isinstance(value, (DataLoader, Dataset)):
         return value
-    if isinstance(value, torch.Tensor):
+    if isinstance(value, torch.Tensor) or _is_numpy_array(value):
         return SequenceDataset(value)
     if isinstance(value, Mapping):
         return ColumnsDataset(value)
@@ -299,6 +423,12 @@ def materialize_source(source: Source) -> Any:
         return ImageDirectory(source.value, **dict(source.options))
     if source.kind == "factory":
         return adapt_values(source.value())
+    if source.kind == "paired":
+        return PairedDataset(source.value, **dict(source.options))
+    if source.kind == "indexed":
+        return FunctionDataset(source.value, **dict(source.options))
+    if source.kind == "stream":
+        return StreamDataset(source.value)
     if source.kind in {"native", "memory"}:
         return adapt_values(source.value)
     raise ConfigurationError(f"Unknown data source kind {source.kind!r}.")

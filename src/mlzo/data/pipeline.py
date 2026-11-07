@@ -19,11 +19,13 @@ from mlzo.errors import ConfigurationError, UnsupportedFeatureError
 from .sources import (
     DatasetIterable,
     Source,
-    adapt_values,
     describe_source,
+    indexed_source,
     is_s3,
     materialize_source,
+    paired_source,
     path_string,
+    stream_source,
 )
 
 
@@ -387,9 +389,9 @@ class DataPipeline:
         return iter(self.build())
 
     def __len__(self) -> int:
-        if self.source.kind not in {"native", "memory"}:
+        if self.source.kind not in {"native", "memory", "paired", "indexed"}:
             raise TypeError("This pipeline's length is available only after building its source.")
-        count = _length(adapt_values(self.source.value))
+        count = _length(materialize_source(self.source))
         if count is None:
             raise TypeError("This data source does not provide a length.")
         for operation in self._operations:
@@ -444,14 +446,28 @@ class DataPipeline:
             raise ConfigurationError("Invalid data source specification.")
         if not isinstance(source["options"], Mapping):
             raise ConfigurationError("Data source options must be a mapping.")
-        result = cls(decode(source["value"]))
+        if not isinstance(source["kind"], str):
+            raise ConfigurationError("Data source kind must be a string.")
+        source_value = decode(source["value"])
         source_options = {name: decode(value) for name, value in source["options"].items()}
-        if source["kind"] == "images":
+        new_sources = {"paired": {"targets"}, "indexed": {"length"}, "stream": set()}
+        if source["kind"] in new_sources:
+            if set(source_options) != new_sources[source["kind"]]:
+                raise ConfigurationError(f"Invalid options for data source {source['kind']!r}.")
+            if source["kind"] == "paired":
+                result = data(source_value, **source_options)
+            elif source["kind"] == "indexed":
+                result = data(get=source_value, **source_options)
+            else:
+                result = data(stream=source_value)
+        elif source["kind"] == "images":
             if set(source_options) != {"labels", "size", "mode"}:
                 raise ConfigurationError("Image specifications need labels, size, and mode.")
-            result = result.images(**source_options)
-        elif source["kind"] != result.source.kind or source_options:
-            raise ConfigurationError("Data source kind or options do not match the decoded value.")
+            result = cls(source_value).images(**source_options)
+        else:
+            result = cls(source_value)
+            if source["kind"] != result.source.kind or source_options:
+                raise ConfigurationError("Data source kind or options do not match the decoded value.")
         operations = spec["operations"]
         if not isinstance(operations, list):
             raise ConfigurationError("Data operations must be an ordered list.")
@@ -513,8 +529,38 @@ class DataPipeline:
         return replace(self, source=Source(self.source.kind, result.value, self.source.options))
 
 
-def data(source: Any) -> DataPipeline:
-    """Describe a source lazily. An existing pipeline is returned unchanged."""
+_MISSING = object()
+
+
+def data(
+    source: Any = None,
+    targets: Any = _MISSING,
+    *,
+    get: Callable[[int], Any] | None = None,
+    length: int | None = None,
+    stream: Callable[[], Iterable] | None = None,
+) -> DataPipeline:
+    """Describe one source, input/target columns, an index function, or a stream.
+
+    get and length must be supplied together. stream creates a fresh iterator
+    for each pass. These modes cannot be combined. A single sequence of pairs
+    remains a sequence of samples; use two arguments to describe columns.
+    Existing pipelines are returned unchanged and native loaders retain their
+    identity on build. No sample function or stream factory is invoked here.
+    """
+    indexed = get is not None or length is not None
+    if indexed or stream is not None:
+        if source is not None or targets is not _MISSING or (indexed and stream is not None):
+            raise ConfigurationError("Choose only one data source mode: source/targets, get/length, or stream.")
+        if indexed:
+            if get is None or length is None:
+                raise ConfigurationError("An indexed data source requires both get and length.")
+            return DataPipeline(indexed_source(get, length))
+        return DataPipeline(stream_source(stream))
+    if source is None:
+        raise ConfigurationError("data() requires a source, get/length, or stream.")
+    if targets is not _MISSING:
+        return DataPipeline(paired_source(source, targets))
     return source if isinstance(source, DataPipeline) else DataPipeline(source)
 
 

@@ -17,7 +17,8 @@ export default defineConfig({
     sidebar: [
       { label: 'Start here', items: [
         { label: 'Welcome to MLZO', slug: '' },
-        { slug: 'start/installation' }, { slug: 'start/quickstart' }, { slug: 'start/concepts' },
+        { slug: 'start/installation' }, { slug: 'start/quickstart' },
+        { slug: 'start/tensors-and-data' }, { slug: 'start/concepts' },
       ] },
       { label: 'Training', items: [
         { slug: 'guides/models-and-planning' }, { slug: 'guides/data' },

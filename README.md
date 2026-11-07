@@ -50,6 +50,10 @@ Checkpoints support local full-state storage and epoch-restart resume. Inference
 
 ## Tensors and data sources
 
+Start with the [tensor and data use cases](https://zpy52.github.io/mlzo/start/tensors-and-data/)
+for copyable examples of paired training data, custom sample functions, streams,
+padding, and worker loading.
+
 `mlzo.tensor(values)` returns a lightweight `Tensor` wrapper. Scalars become
 `(1, 1)` and vectors become `(N, 1)` by default. Reductions preserve dimensions,
 and basic integer indexing uses singleton slices. Explicit shape operations

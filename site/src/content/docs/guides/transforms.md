@@ -3,6 +3,9 @@ title: Tensors and transforms
 description: Use explicit tensor wrappers, shape conventions, named axes, and native PyTorch boundaries.
 ---
 
+Start with [tensor and data use cases](../../start/tensors-and-data/) for
+copyable calculations, named reductions, and native PyTorch calls.
+
 `ml.tensor(values)` returns `ml.Tensor`, a lightweight wrapper around a native
 PyTorch tensor. With `axes=...` it returns `ml.NamedTensor`, a `Tensor` subclass.
 Conversion uses `torch.as_tensor`, so existing storage and autograd history are

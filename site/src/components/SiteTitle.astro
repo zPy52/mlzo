@@ -1,0 +1,9 @@
+---
+import Default from '@astrojs/starlight/components/SiteTitle.astro';
+---
+<span class="brand"><Default {...Astro.props} /><span class="release">0.1 alpha</span></span>
+<style>
+  .brand { display: flex; align-items: center; gap: .9rem; white-space: nowrap; }
+  .release { font-family: var(--sl-font-mono); font-size: .66rem; font-weight: 500; color: var(--sl-color-text-accent); border: 1px solid var(--sl-color-hairline); padding: .25rem .5rem; border-radius: 5px; }
+  @media (max-width: 25rem) { .release { display: none; } }
+</style>

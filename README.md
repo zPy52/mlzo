@@ -2,6 +2,10 @@
 
 MLZO `0.1.0a1` is a Python alpha for deferred PyTorch training. A run can execute on one local device or one enrolled remote worker. Planning describes the run before constructing lazy models or opening factory-backed data.
 
+Read the [documentation](https://zpy52.github.io/mlzo/) for installation, tutorials,
+training and remote-worker guides, the Python API, and the CLI reference.
+The open-source [documentation site](site/README.md) also runs locally.
+
 ## Install locally
 
 Use Python 3.12 or newer in an activated virtual environment, from this directory:

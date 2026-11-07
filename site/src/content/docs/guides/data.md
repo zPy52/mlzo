@@ -30,6 +30,8 @@ def generate():
         yield X[i], y[i]
 
 streamed = ml.data(stream=generate).batch(4)
+assert next(iter(indexed))[0].shape == (4, 4)
+assert next(iter(streamed))[1].shape == (4, 1)
 ```
 
 | Form | Contract |
@@ -82,6 +84,7 @@ pipeline = (
     .batch(4)
     .map(summarize)
 )
+assert next(iter(pipeline))["targets"].shape == (4, 1)
 ```
 
 Use `transform(fn)` on individual samples before `batch`. `map(fn)` transforms
@@ -109,9 +112,23 @@ batch. Outputs remain **native `torch.Tensor` leaves**. Feature vectors stack to
 `(B, F)`, and scalar labels stack to `(B, 1)`. Samples are not normalized to
 `(F, 1)` before stacking. Higher-rank batch leaves keep their shape.
 
+Unwrapping preserves each sample's existing shape and autograd graph. Use `wrap`
+or `tensor(..., normalize=False)` for a wrapped vector sample. A vector already
+constructed as `(F, 1)` keeps that shape and stacks to `(B, F, 1)`.
+
+```python
+def wrapped_sample(i):
+    return ml.wrap(X[i]), ml.tensor(y[i], normalize=False)
+
+wrapped_batches = ml.data(get=wrapped_sample, length=len(X)).batch(4)
+assert next(iter(wrapped_batches))[0].shape == (4, 4)
+assert next(iter(wrapped_batches))[1].shape == (4, 1)
+```
+
 `batch(size, normalize=False)` retains native collated shapes. A custom
 `combine(samples)` controls the exact output shape; MLZO does not normalize its
-result. `collate_fn` remains a legacy alias for `combine`. Supply only one.
+result or unwrap its samples. `collate_fn` remains a legacy alias for `combine`.
+Supply only one.
 
 ```python
 def combine(samples):
@@ -124,7 +141,7 @@ assert next(iter(custom))[1].shape == (4,)
 
 ## Shuffle, workers, and native loader options
 
-```python
+```python no-exec
 # Put this in an importable script with a guarded process entrypoint.
 if __name__ == "__main__":
     parallel = ml.data(get=get_sample, length=len(X)).batch(
@@ -221,7 +238,7 @@ credential resolution. An omitted `boto3` dependency raises
 
 ## Images and normalization
 
-```python
+```python no-exec
 pipeline = (
     ml.data("images/")
     .images(size=(224, 224), labels="class_subdirectories")
@@ -273,6 +290,9 @@ importable callables rather than sample contents. `local_paths()` identifies
 explicit local paths, and `rewrite_local_paths(rewrite)` returns rewritten
 configuration without file I/O. Paths hidden inside factories cannot be
 identified automatically.
+
+New specifications use version 2. Reading version 1 retains its native batch
+shapes and persisted shuffle order, including when it is saved again as version 2.
 
 See [remote submission](../../remote/submission/) for source staging and the
 [API reference](../../reference/api/data/) for generated signatures.

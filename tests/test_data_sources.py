@@ -108,7 +108,7 @@ def test_single_sequence_of_pairs_is_row_major():
 
 def test_named_tensor_columns_are_unwrapped_before_sample_indexing():
     inputs = ml.tensor([[1.0, 2.0], [3.0, 4.0]], axes=("samples", "features"))
-    targets = ml.tensor([0, 1], axes=("samples",))
+    targets = ml.tensor([0, 1], axes=("samples",), normalize=False)
     x, y = next(iter(ml.data(inputs, targets)))
     torch.testing.assert_close(x, inputs.raw[0])
     torch.testing.assert_close(y, targets.raw[0])

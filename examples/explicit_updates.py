@@ -5,7 +5,6 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import TensorDataset
 
 import mlzo
 
@@ -17,6 +16,8 @@ class ClassifierTraining(mlzo.Training[tuple[torch.Tensor, torch.Tensor]]):
 
     def step(self, batch: tuple[torch.Tensor, torch.Tensor]) -> mlzo.Step:
         x, y = batch
+        # Default batches have column labels; native cross entropy needs (B,).
+        y = y.squeeze(1)
         loss = F.cross_entropy(self.model(x), y)
         self.update("classifier", loss)
         self.state["examples_seen"] += len(x)
@@ -25,6 +26,7 @@ class ClassifierTraining(mlzo.Training[tuple[torch.Tensor, torch.Tensor]]):
 
     def evaluate(self, batch: tuple[torch.Tensor, torch.Tensor]) -> mlzo.Step:
         x, y = batch
+        y = y.squeeze(1)
         return mlzo.Step(loss=F.cross_entropy(self.model(x), y))
 
 
@@ -32,7 +34,7 @@ def main() -> None:
     generator = torch.Generator().manual_seed(11)
     x = torch.randn(32, 4, generator=generator)
     y = (x[:, 0] > 0).long()
-    batches = mlzo.data(TensorDataset(x, y)).batch(8)
+    batches = mlzo.data(x, y).batch(8)
     algorithm = ClassifierTraining()
     run = mlzo.train(algorithm, batches,
                      optimizer={"classifier": mlzo.opt("sgd", lr=0.1)},

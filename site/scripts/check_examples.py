@@ -10,8 +10,9 @@ DOCS = Path(__file__).resolve().parents[1] / "src/content/docs"
 
 
 def main():
-    for name in ("start/quickstart.md", "guides/custom-training.md", "guides/transforms.md"):
-        code = "\n\n".join(re.findall(r"^```python[^\n]*\n(.*?)^```", (DOCS / name).read_text(), re.M | re.S))
+    for name in ("start/quickstart.md", "guides/custom-training.md", "guides/transforms.md", "guides/data.md"):
+        # Optional image inputs and multiprocessing scripts use python no-exec.
+        code = "\n\n".join(re.findall(r"^```python\n(.*?)^```", (DOCS / name).read_text(), re.M | re.S))
         if not code:
             raise SystemExit(f"No Python example found in {name}")
         with tempfile.TemporaryDirectory(prefix="mlzo-doc-example-") as temporary:

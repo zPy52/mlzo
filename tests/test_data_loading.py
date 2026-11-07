@@ -3,6 +3,7 @@
 import itertools
 import os
 import random
+from collections import OrderedDict, namedtuple
 from tempfile import TemporaryDirectory
 
 import pytest
@@ -58,6 +59,10 @@ def worker_sample(index):
 
 def worker_transform(sample):
     return {**sample, "transform_pid": os.getpid()}
+
+
+def worker_wrap(sample):
+    return {key: ml.wrap(torch.tensor(value)) for key, value in worker_transform(sample).items()}
 
 
 def worker_combine(samples):
@@ -120,6 +125,58 @@ def test_default_batch_normalization_is_only_at_output():
     assert batch["scalar"].shape == (1, 1)
     assert batch["nested"][0].shape == (1, 3)
     assert batch["nested"][1].shape == (1, 1)
+
+
+@pytest.mark.parametrize("normalize", [True, False])
+@pytest.mark.parametrize("source", ["get", "stream", "transform"])
+def test_default_collation_unwraps_nested_samples_without_changing_sample_shapes(source, normalize):
+    record = namedtuple("Record", "features label")
+    leaf = torch.arange(6., requires_grad=True)
+    samples = [OrderedDict(item=record(
+        ml.wrap((leaf * 2).reshape(3, 2)[index]),
+        ml.tensor(index, normalize=False, axes=()),
+    ), nested=[ml.wrap(torch.ones(1, 2))],
+        column=ml.tensor([index, index + 1])) for index in range(3)]
+    # Mixed native/wrapped leaves follow the same collation rules.
+    samples[1]["item"] = record(samples[1]["item"].features.raw, samples[1]["item"].label)
+    if source == "get":
+        pipeline = ml.data(get=samples.__getitem__, length=len(samples))
+    elif source == "stream":
+        pipeline = ml.data(stream=lambda: iter(samples))
+    else:
+        pipeline = ml.data(range(len(samples))).transform(samples.__getitem__)
+    batch = next(iter(pipeline.batch(3, normalize=normalize)))
+    assert isinstance(batch, OrderedDict)
+    assert isinstance(batch["item"], record)
+    assert isinstance(batch["nested"], list)
+    assert batch["item"].features.shape == (3, 2)
+    assert batch["item"].label.shape == ((3, 1) if normalize else (3,))
+    assert batch["nested"][0].shape == (3, 1, 2)
+    assert batch["column"].shape == (3, 2, 1)
+    torch.testing.assert_close(batch["item"].features, (leaf * 2).reshape(3, 2))
+    batch["item"].features.sum().backward()
+    torch.testing.assert_close(leaf.grad, torch.full_like(leaf, 2))
+
+
+def test_custom_combine_receives_original_wrappers_and_preserves_output():
+    samples = [ml.wrap(torch.tensor([1., 2.])), ml.tensor(3.)]
+    output = {"scalar": ml.wrap(torch.tensor(4.)), "samples": samples}
+
+    def combine(received):
+        assert all(actual is expected for actual, expected in zip(received, samples, strict=True))
+        return output
+
+    assert next(iter(ml.data(samples).batch(2, combine=combine))) is output
+
+
+def test_default_wrapped_sample_collation_runs_in_native_workers(worker_tmp):
+    pipeline = ml.data(get=worker_sample, length=5).transform(worker_wrap).batch(2, workers=2)
+    batches = list(pipeline)
+    assert torch.cat([batch["value"] for batch in batches]).flatten().tolist() == list(range(5))
+    for batch in batches:
+        assert batch["pid"].shape == (len(batch["value"]), 1)
+        assert (batch["pid"] != os.getpid()).all()
+        torch.testing.assert_close(batch["pid"], batch["transform_pid"])
 
 
 def test_custom_collation_shapes_win_and_aliases_reject_conflicts():

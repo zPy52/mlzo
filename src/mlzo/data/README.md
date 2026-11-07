@@ -106,9 +106,14 @@ batch. Outputs remain **native `torch.Tensor` leaves**. Feature vectors stack to
 `(B, F)`, and scalar labels stack to `(B, 1)`. Samples are not normalized to
 `(F, 1)` before stacking. Higher-rank batch leaves keep their shape.
 
+Unwrapping preserves the sample's existing shape and autograd graph. Use
+`wrap(native)` or `tensor(..., normalize=False)` for wrapped vector samples.
+Already normalized `(F, 1)` samples stack to `(B, F, 1)`.
+
 `batch(size, normalize=False)` retains native collated shapes. A custom
 `combine(samples)` controls the exact output shape; MLZO does not normalize its
-result. `collate_fn` remains a legacy alias for `combine`. Supply only one.
+result or unwrap its samples. `collate_fn` remains a legacy alias for `combine`.
+Supply only one.
 
 ```python
 def combine(samples):
@@ -270,3 +275,6 @@ importable callables rather than sample contents. `local_paths()` identifies
 explicit local paths, and `rewrite_local_paths(rewrite)` returns rewritten
 configuration without file I/O. Paths hidden inside factories cannot be
 identified automatically.
+
+New specifications use version 2. Reading version 1 retains its native batch
+shapes and persisted shuffle order, including when it is saved again as version 2.

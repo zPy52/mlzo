@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from itertools import islice
 from typing import Any
 
@@ -11,6 +12,7 @@ import torch
 from torch.utils.data import Dataset, IterableDataset, default_collate, get_worker_info
 
 from mlzo.errors import ConfigurationError
+from mlzo.transforms.tensor import Tensor
 
 
 def length(value):
@@ -134,24 +136,40 @@ def mapped(source, function):
     return MappedDataset(source, function) if map_style(source) else MappedIterable(source, function)
 
 
-def normalize_batch(value: Any) -> Any:
-    """Shape native collated leaves, never unbatched samples or custom output."""
+def _map_leaves(value: Any, function) -> Any:
+    if isinstance(value, Mapping):
+        items = {key: _map_leaves(item, function) for key, item in value.items()}
+        try:
+            if isinstance(value, MutableMapping):
+                result = copy.copy(value)
+                result.update(items)
+                return result
+            return type(value)(items)
+        except TypeError:
+            return items
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        return type(value)(*(_map_leaves(item, function) for item in value))
+    if isinstance(value, tuple):
+        return tuple(_map_leaves(item, function) for item in value)
+    if isinstance(value, list):
+        return [_map_leaves(item, function) for item in value]
+    return function(value)
+
+
+def _normalize_leaf(value):
     if isinstance(value, torch.Tensor):
         if value.ndim == 0:
             return value.reshape(1, 1)
         if value.ndim == 1:
             return value.unsqueeze(-1)
-        return value
-    if isinstance(value, Mapping):
-        return {key: normalize_batch(item) for key, item in value.items()}
-    if isinstance(value, tuple) and hasattr(value, "_fields"):
-        return type(value)(*(normalize_batch(item) for item in value))
-    if isinstance(value, tuple):
-        return tuple(normalize_batch(item) for item in value)
-    if isinstance(value, list):
-        return [normalize_batch(item) for item in value]
     return value
 
 
+def collate_default(samples):
+    """Unwrap sample leaves without copying, detaching, or changing their rank."""
+    native = _map_leaves(samples, lambda value: value.raw if isinstance(value, Tensor) else value)
+    return default_collate(native)
+
+
 def collate_normalized(samples):
-    return normalize_batch(default_collate(samples))
+    return _map_leaves(collate_default(samples), _normalize_leaf)

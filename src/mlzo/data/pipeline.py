@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import torch
-from torch.utils.data import DataLoader, Dataset, default_collate
+from torch.utils.data import DataLoader, Dataset
 
 from mlzo.errors import ConfigurationError, UnsupportedFeatureError
 
@@ -19,6 +19,7 @@ from .loading import (
     IterableView,
     OrderedDataset,
     ShuffledIterable,
+    collate_default,
     collate_normalized,
     finite,
     length as _length,
@@ -200,11 +201,12 @@ class DataPipeline:
     ) -> DataPipeline:
         """Build batches with native DataLoader workers and collation.
 
-        Default collation shapes scalar/1D tensor leaves to at least two axes
-        only after stacking. normalize=False preserves native shapes; explicit
-        combine/collate_fn output always keeps its shape. Worker prefetch counts
-        batches per worker. Construct a native DataLoader for advanced options
-        such as batch_sampler, then pass it to data() unchanged.
+        Default collation unwraps MLZO tensor leaves at their existing shape,
+        then shapes scalar/1D batch leaves to at least two axes after stacking.
+        normalize=False preserves native collated shapes. Custom combine or
+        collate_fn receives original samples and preserves its exact output.
+        Worker prefetch counts batches per worker. Construct a native DataLoader
+        for advanced options such as batch_sampler, then pass it to data() unchanged.
         """
         _integer(size, "batch size", minimum=1)
         for name, value in (("drop_last", drop_last), ("shuffle", shuffle),
@@ -372,7 +374,7 @@ class DataPipeline:
                     values = OrderedDataset(values, 42 + epoch)
                 collate = options["collate_fn"]
                 if collate is None:
-                    collate = collate_normalized if options["normalize"] else default_collate
+                    collate = collate_normalized if options["normalize"] else collate_default
                 values = DataLoader(
                     values if isinstance(values, Dataset) else IterableView(values),
                     batch_size=options["size"], drop_last=options["drop_last"],
@@ -428,7 +430,7 @@ class DataPipeline:
         return count
 
     def to_spec(self, encode: Callable[[Any], Any]) -> dict[str, Any]:
-        """Encode configuration only. The one-argument encoder handles values.
+        """Encode version 2 configuration. The one-argument encoder handles values.
 
         A remote encoder should reject nonimportable callables and unsupported
         native objects. Neither factories nor map functions are invoked here.
@@ -456,7 +458,7 @@ class DataPipeline:
 
     @classmethod
     def from_spec(cls, spec: Mapping, decode: Callable[[Any], Any]) -> DataPipeline:
-        """Reconstruct configuration with a one-argument decoder, without building."""
+        """Decode without building. Version 1 keeps legacy batch shapes and shuffle order."""
         if (
             not isinstance(spec, Mapping)
             or set(spec) != {"version", "source", "operations", "loader"}

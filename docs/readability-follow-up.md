@@ -49,11 +49,12 @@ existing plan contracts.
 | 8, 9, 10, 12 | Deferred distributed/cloud/S3-checkpoint/remote-inference capabilities | Explicit unsupported errors remain. These are not functionality claims. |
 
 Tests added for this pass use standard-library `unittest` and the existing
-PyTorch runtime. Run the durable CPU checks with
-`.venv/bin/python -m unittest discover -s tests -v`. The real worker check and
-pre-refactor numerical baselines also run from temporary scripts. No GPU,
-cross-machine Linux/CUDA, TLS deployment, or S3 credentials are available for
-those integration paths; their validation limits remain explicit.
+PyTorch runtime. The combined suite also includes pytest cases. Install
+`.[test]` in an isolated environment, then run `python -m pytest -q` from the
+repository root. The real worker check and pre-refactor numerical baselines
+also run from temporary scripts. No GPU, cross-machine Linux/CUDA, TLS
+deployment, or S3 credentials are available for those integration paths;
+their validation limits remain explicit.
 
 ## Rounds
 
@@ -267,9 +268,21 @@ refactor's authored changes. Their configuration and execution inputs are
 included in the combined-tree fingerprint and test evidence.
 
 The parent reviewed each implementation agent's diff and ran combined checks.
-The integrated candidate receives a separate correctness review before push.
-The final handoff identifies the checked commit and review result. No branch
+A separate correctness review checked commit
+`0e210e57ba4baf13c05d4c19e2154802226760b2` and found no introduced production
+defects. Its one finding was a unittest discovery command that required an
+uninstalled pytest dependency. The instructions now install the test extra
+and use pytest for the combined suite. The final handoff identifies the
+checked commit and review result. No branch
 protection, hosting settings, cloud resources or merge rules are changed.
+
+Independent review:
+<t3-thread://v2/596701e5-5153-471d-a553-7727cb55f3f3/thread:delegated-task:command%3Amcp%3Ac169140e-ac25-44fc-a86b-8b887a4b610b%3Adelegate-task%3A03d6cdcc-bd99-47a1-ae41-e87df8038f34>.
+It ran 32 focused source tests and verified the CI action pins and package
+contents. The parent self-reviewed the documentation-only correction and ran
+the newly documented editable installation, the complete suite (**39 passed
+in 73.54 seconds**) and `pip check`. Production code, tests and package
+configuration are unchanged from the independently reviewed commit.
 
 Each round used GPT-6.1 Sol at high reasoning effort:
 

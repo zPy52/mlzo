@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlzo"
+dynamic = ["version"]
+description = "Deferred PyTorch training with local checkpoints and single-worker remote execution"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+  "torch>=2.2.2,<3",
+  # The last Intel macOS torch wheel predates the NumPy 2 ABI.
+  "numpy<2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+vision = ["Pillow"]
+s3 = ["boto3"]
+rl = ["gymnasium"]
+dev = ["build", "twine"]
+
+[project.scripts]
+mlzo = "mlzo.cli.main:main"
+
+[tool.hatch.version]
+path = "src/mlzo/_version.py"
+
+[tool.hatch.build]
+exclude = [
+  "**/__pycache__", "**/*.py[cod]", "**/.DS_Store",
+  "**/.venv", "**/venv", "**/.git", "**/.cache", "**/.pytest_cache",
+  "**/.mypy_cache", "**/.ruff_cache", "**/.mlzo", "**/.aws", "**/.ssh",
+  "**/.env", "**/.env.*", "**/.pypirc", "**/.netrc", "**/secrets.*", "**/credentials.*",
+  "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.token", "**/*.sqlite*", "**/*.log",
+  "**/*.pt", "**/*.pth", "**/*.tmp", "**/.staging-*",
+  "**/tempCodeRunnerFile.py", "/dist", "/build", "/tmp", "/outputs",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlzo"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/pyproject.toml", "/README.md", "/LICENSE", "/CHANGELOG.md", "/plan.md", "/src/mlzo",
+  "/docs/alpha-contract.md", "/docs/alpha-support.md", "/docs/usage.md",
+  "/docs/publishing.md", "/examples/**/*.py", "/examples/**/README.md",
+  "/examples/**/pyproject.toml",
+]

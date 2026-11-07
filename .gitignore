@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific ignores
+.venv/
+*.py[cod]
+.mlzo/
+*.pt
+*.pth
+.env.*
+!.env.example

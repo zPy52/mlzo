@@ -18,7 +18,9 @@ from .loading import (
     FilteredIterable,
     IterableView,
     OrderedDataset,
+    PipelineLoader,
     ShuffledIterable,
+    batch_length,
     collate_default,
     collate_normalized,
     finite,
@@ -329,6 +331,8 @@ class DataPipeline:
         Iterable workers batch their own shards, following native PyTorch
         semantics, including drop_last per worker. Partial epochs have no exact
         cursor replay guarantee. Generic native IterableDatasets own sharding.
+        Generated loaders count known indexed shards exactly. Multiple native
+        iterable workers with unknown shard sizes have no reported length.
         """
         _integer(epoch, "epoch")
         workers, prefetch = self._loading_options()
@@ -375,7 +379,7 @@ class DataPipeline:
                 collate = options["collate_fn"]
                 if collate is None:
                     collate = collate_normalized if options["normalize"] else collate_default
-                values = DataLoader(
+                values = PipelineLoader(
                     values if isinstance(values, Dataset) else IterableView(values),
                     batch_size=options["size"], drop_last=options["drop_last"],
                     sampler=sampler, collate_fn=collate, num_workers=workers,
@@ -398,7 +402,7 @@ class DataPipeline:
             else:
                 raise UnsupportedFeatureError(f"Data operation {operation.name!r} is not supported.")
         if not batched and workers:
-            return DataLoader(
+            return PipelineLoader(
                 values, batch_size=None, collate_fn=_identity, num_workers=workers,
                 generator=torch.Generator().manual_seed(epoch % (2**64)),
                 **({"prefetch_factor": prefetch} if prefetch is not None else {}),
@@ -409,25 +413,33 @@ class DataPipeline:
         return iter(self.build())
 
     def __len__(self) -> int:
+        """Return the exact item/batch count when known, without reading samples.
+
+        Buffered indexed shuffles count worker-local batches. Filters and
+        arbitrary native iterable worker shards have unknown length.
+        """
         if self.source.kind not in {"native", "memory", "paired", "indexed"}:
             raise TypeError("This pipeline's length is available only after building its source.")
         if any(operation.name == "filter" for operation in self._operations):
             raise TypeError("A filtered pipeline has unknown length until consumed.")
-        count = _length(materialize_source(self.source))
+        values = materialize_source(self.source)
+        workers, _ = self._loading_options()
         for operation in self._operations:
+            if operation.name == "shuffle" and dict(operation.options)["buffer_size"] is not None and map_style(values):
+                # Only cardinality matters here. This view has the same strided
+                # shards as ShuffledIterable, without constructing a permutation.
+                values = IterableView(values)
             if operation.name == "batch":
                 options = dict(operation.options)
                 if options["sampler"] is not None:
                     count = _length(options["sampler"])
                     if count is None:
                         raise TypeError("This sampler does not provide a length.")
-                if count is None:
-                    raise TypeError("This data source does not provide a length.")
-                size = options["size"]
-                count = count // size if options["drop_last"] else (count + size - 1) // size
-        if count is None:
-            raise TypeError("This data source does not provide a length.")
-        return count
+                    size = options["size"]
+                    return count // size if options["drop_last"] else (count + size - 1) // size
+                return batch_length(values, options["size"], options["drop_last"], workers)
+        # A supplied loader already owns its worker/length semantics.
+        return len(values) if isinstance(values, DataLoader) else batch_length(values, None, False, workers)
 
     def to_spec(self, encode: Callable[[Any], Any]) -> dict[str, Any]:
         """Encode version 2 configuration. The one-argument encoder handles values.

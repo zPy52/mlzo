@@ -26,7 +26,7 @@ remains a sequence of samples; use two arguments to describe columns.
 Existing pipelines are returned unchanged and native loaders retain their
 identity on build. No sample function or stream factory is invoked here.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L576).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L588).
 
 ## images
 
@@ -42,7 +42,7 @@ mlzo.images(
 
 Describe a local image directory with an explicit label convention.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L608).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L620).
 
 ## DataPipeline
 
@@ -52,9 +52,9 @@ Declared fields:
 source: Any
 ```
 
-Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned.
+Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned. Known indexed worker shards have exact batch counts; arbitrary native iterable shards with multiple workers report unknown length.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L129).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L131).
 
 ### DataPipeline.map
 
@@ -191,6 +191,8 @@ Construct native loading lazily; shuffle uses seed + epoch.
 Iterable workers batch their own shards, following native PyTorch
 semantics, including drop_last per worker. Partial epochs have no exact
 cursor replay guarantee. Generic native IterableDatasets own sharding.
+Generated loaders count known indexed shards exactly. Multiple native
+iterable workers with unknown shard sizes have no reported length.
 
 ### DataPipeline.to_spec
 

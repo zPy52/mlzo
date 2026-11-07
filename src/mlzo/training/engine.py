@@ -196,6 +196,10 @@ class Engine:
             return epochs * math.ceil(self._epoch_length / accumulation)
         if steps is not None:
             length = self._epoch_length
+            # Exhausting an unknown finite pass flushes partial accumulation.
+            # A step budget alone cannot count those extra optimizer updates.
+            if length is None and accumulation > 1:
+                return None
             if length:
                 full, short = divmod(steps, length)
                 return full * math.ceil(length / accumulation) + math.ceil(short / accumulation)

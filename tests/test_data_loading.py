@@ -73,6 +73,109 @@ def failing_sample(index):
     raise RuntimeError("loading failed deliberately")
 
 
+def regression_sample(index):
+    return torch.tensor([float(index)]), torch.tensor([0.])
+
+
+class SizedShardedNative(IterableDataset):
+    def __len__(self):
+        return 6
+
+    def __iter__(self):
+        worker = get_worker_info()
+        start, step = (worker.id, worker.num_workers) if worker else (0, 1)
+        for index in range(start, 6, step):
+            yield regression_sample(index)
+
+
+@pytest.mark.parametrize("count,drop_last,expected_sizes", [
+    (6, False, [2, 2, 1, 1]),
+    (10, False, [3, 3, 2, 2]),
+    (10, True, []),
+    (14, True, [4, 4]),
+])
+def test_buffered_worker_lengths_match_native_partial_batches(worker_tmp, count, drop_last, expected_sizes):
+    pipeline = ml.data(get=regression_sample, length=count).shuffle(buffer=2).batch(
+        4, workers=4, prefetch=2, drop_last=drop_last,
+    )
+    loader = pipeline.build()
+    iterator = iter(loader)
+    processes = list(iterator._workers)
+    try:
+        batches = list(iterator)
+    finally:
+        iterator._shutdown_workers()
+    assert all(not process.is_alive() for process in processes)
+    assert [len(x) for x, _ in batches] == expected_sizes
+    assert len(pipeline) == len(loader) == len(batches)
+    if not drop_last:
+        assert sorted(value for x, _ in batches for value in x[:, 0].tolist()) == list(range(count))
+
+
+def test_buffered_worker_epoch_covers_samples_and_infers_accumulated_horizon(worker_tmp):
+    pipeline = ml.data(get=regression_sample, length=6).shuffle(buffer=2).batch(4, workers=4)
+    seen, horizons = [], []
+
+    def step(model, batch):
+        x, y = batch
+        seen.extend(x[:, 0].tolist())
+        return (model(x) - y).square().mean()
+
+    def schedule(update, horizon):
+        horizons.append(horizon)
+        return 1.
+
+    history = ml.train(torch.nn.Linear(1, 1), pipeline, step=step, accumulate=3,
+                       schedule=schedule).fit(epochs=1, on="cpu")
+    assert sorted(seen) == list(range(6))
+    assert history.counters["iteration"] == 4
+    assert history.counters["epoch"] == 1
+    assert history.counters["optimizer_steps"] == {"default": 2}
+    assert set(horizons) == {2}
+
+
+def test_native_worker_shards_have_unknown_batch_count(worker_tmp):
+    pipeline = ml.data(SizedShardedNative()).shuffle(buffer=2).batch(4, workers=4)
+    with pytest.raises(TypeError, match="length|shard"):
+        len(pipeline)
+    loader = pipeline.build()
+    with pytest.raises(TypeError, match="length|shard"):
+        len(loader)
+    iterator = iter(loader)
+    processes = list(iterator._workers)
+    try:
+        assert sorted(value for x, _ in iterator for value in x[:, 0].tolist()) == list(range(6))
+    finally:
+        iterator._shutdown_workers()
+    assert all(not process.is_alive() for process in processes)
+
+
+def test_unknown_finite_length_requires_steps_and_explicit_accumulation_horizon():
+    pipeline = ml.data(get=regression_sample, length=3).filter(lambda pair: True).batch(1)
+    with pytest.raises(ConfigurationError, match="fit\\(steps"):
+        ml.train(torch.nn.Linear(1, 1), pipeline, loss="mse").fit(epochs=1, on="cpu")
+    with pytest.raises(ConfigurationError, match="explicit total_steps"):
+        ml.train(torch.nn.Linear(1, 1), pipeline, loss="mse", accumulate=2,
+                 schedule=ml.linear()).fit(steps=6, on="cpu")
+    history = ml.train(torch.nn.Linear(1, 1), pipeline, loss="mse", accumulate=2,
+                       schedule=ml.linear(total_steps=4)).fit(steps=6, on="cpu")
+    assert history.counters["optimizer_steps"] == {"default": 4}
+
+
+def test_worker_lengths_preserve_provenance_without_reading_samples():
+    def forbidden(*args):
+        raise AssertionError("Length calculation must not read or transform samples")
+
+    pipeline = ml.data(get=forbidden, length=6).shuffle(buffer=2).transform(forbidden).batch(
+        4, workers=4, combine=forbidden,
+    ).map(forbidden)
+    assert len(pipeline) == len(pipeline.build()) == 4
+    filtered = ml.data(get=forbidden, length=6).filter(forbidden).shuffle(buffer=2).batch(4, workers=4)
+    for value in (filtered, filtered.build()):
+        with pytest.raises(TypeError):
+            len(value)
+
+
 class EpochSampler(Sampler):
     def __init__(self):
         self.epoch = 0

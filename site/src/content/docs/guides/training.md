@@ -43,6 +43,10 @@ and custom steps receive native tensors. Default pipeline collation produces
 `batch(..., normalize=False)` or explicit custom collation for native label shapes.
 See [data pipelines](../data/) and [tensor conventions](../transforms/).
 
+Epoch-only limits require a known batch count. Streams and other unknown-length
+sources need `fit(steps=...)`, even when finite. With `accumulate > 1` and unknown
+epoch length, linear/cosine schedules require explicit `total_steps`.
+
 ## Write a function step
 
 Use `step=` for another batch structure or model invocation. Do not pass `loss=` at the same time.

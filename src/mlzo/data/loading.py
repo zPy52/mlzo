@@ -9,7 +9,7 @@ from itertools import islice
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset, IterableDataset, default_collate, get_worker_info
+from torch.utils.data import DataLoader, Dataset, IterableDataset, default_collate, get_worker_info
 
 from mlzo.errors import ConfigurationError
 from mlzo.transforms.tensor import Tensor
@@ -28,6 +28,28 @@ def map_style(value):
 
 def finite(value):
     return getattr(value, "finite", False) or length(value) is not None
+
+
+def batch_length(source, size, drop_last, workers):
+    """Count native batches without reading samples or guessing worker shards."""
+    if workers > 1 and not map_style(source):
+        if not isinstance(source, IterableView):
+            raise TypeError("Native iterable worker shard lengths are unknown.")
+        counts = source.shard_lengths(workers)
+    else:
+        counts = [len(source)]
+    if size is None:
+        return sum(counts)
+    return sum(count // size if drop_last else (count + size - 1) // size for count in counts)
+
+
+class PipelineLoader(DataLoader):
+    """Native loading with exact lengths for MLZO's known iterable shards."""
+
+    def __len__(self):
+        if isinstance(self.dataset, IterableDataset):
+            return batch_length(self.dataset, self.batch_size, self.drop_last, self.num_workers)
+        return super().__len__()
 
 
 class MappedDataset(Dataset):
@@ -75,6 +97,14 @@ class IterableView(IterableDataset):
     def __len__(self):
         return len(self.source)
 
+    def shard_lengths(self, workers):
+        if map_style(self.source):
+            count, extra = divmod(len(self.source), workers)
+            return [count + (worker < extra) for worker in range(workers)]
+        if isinstance(self.source, IterableView):
+            return self.source.shard_lengths(workers)
+        raise TypeError("Native iterable worker shard lengths are unknown.")
+
 
 class MappedIterable(IterableView):
     def __init__(self, source, function):
@@ -92,6 +122,9 @@ class FilteredIterable(IterableView):
 
     def __len__(self):
         raise TypeError("A filtered source has unknown length until consumed.")
+
+    def shard_lengths(self, workers):
+        raise TypeError("A filtered source has unknown worker shard lengths.")
 
     def __iter__(self):
         for sample in super().__iter__():

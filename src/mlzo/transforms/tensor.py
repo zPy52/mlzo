@@ -191,7 +191,14 @@ class Tensor:
 
         ``dim`` and ``keepdim`` retain their PyTorch spellings. Omit axes or use
         None for a global reduction. A positional keepdim boolean is accepted.
+        Integer/bool inputs with dtype omitted or None use
+        torch.get_default_dtype(). Other inputs and explicit dtypes follow
+        PyTorch. The input dtype/storage and native .raw.mean() are unchanged.
         """
+        if dtype is None and not (
+            self.raw.is_floating_point() or self.raw.is_complex() or self.raw.is_quantized
+        ):
+            dtype = torch.get_default_dtype()
         return self._reduce("mean", axes, axis, dim, keepdims, keepdim, dtype)
 
     def sum(

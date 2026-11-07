@@ -105,6 +105,8 @@ class Run:
 
         Local execution is synchronous. ``wait=False`` is accepted only for a
         cluster's durable submission. Steps count algorithm calls, not updates.
+        Unknown-length data requires steps, even for finite streams. With
+        accumulation and unknown epoch length, decay horizons must be explicit.
         """
         _validate_budget(epochs, steps)
         if type(wait) is not bool:

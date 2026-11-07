@@ -188,9 +188,23 @@ The no-operation adapter also preserves the loader's native label shapes.
 
 ## Stream safely
 
-A finite stream can complete an epoch. An infinite stream needs a finite training
-step budget, such as `run.fit(steps=100, on="cpu")`; an epoch target alone cannot
-finish an infinite pass. Unknown-length streams and filters require a shuffle buffer.
+Unknown-length sources, including finite streams and filters, require a finite
+training step budget such as `run.fit(steps=100, on="cpu")`. `fit(epochs=...)`
+alone requires a known batch count. A finite reusable stream restarts when it
+is exhausted; an infinite stream continues until the step limit. With unknown
+epoch length and `accumulate > 1`, linear/cosine schedules need explicit
+`total_steps`, because each exhausted pass flushes a partial accumulation.
+Unknown-length streams and filters require a shuffle buffer.
+
+Buffered shuffle converts indexed data to an iterable with known strided
+worker shards. `len(pipeline)` and `len(pipeline.build())` count batches per
+shard, including partial batches and `drop_last` per worker. For example,
+six indexed samples with `.shuffle(buffer=2).batch(4, workers=4)` produce
+four batches of sizes 2, 2, 1, 1. Length calculation never reads samples.
+MLZO cannot infer arbitrary native `IterableDataset` worker shard sizes.
+With multiple workers, its generated loader reports unknown length even
+when that source defines `__len__`; use a step budget. Existing native
+`DataLoader` objects keep their identity and caller-owned length semantics.
 
 With multiple workers, `data(stream=factory)` requires an importable deterministic
 factory with the explicit attribute `factory.mlzo_replayable = True`. Each worker

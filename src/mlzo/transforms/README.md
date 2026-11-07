@@ -52,8 +52,9 @@ mutate native storage and obey PyTorch's casting and autograd restrictions.
 ## Reduce and index
 
 ```python
-matrix = ml.tensor([[1., 2.], [3., 4.]])
+matrix = ml.tensor([[1, 2], [3, 4]])
 assert matrix.mean(axis=1).shape == (2, 1)
+assert matrix.mean(axis=1).raw.tolist() == [[1.5], [3.5]]
 assert matrix.sum(axis=0).shape == (1, 2)
 assert matrix.mean().shape == (1, 1)
 assert matrix.mean(axis=1, keepdims=False).shape == (2,)
@@ -64,6 +65,13 @@ assert matrix.reshape(4).shape == (4,)
 assert matrix.flatten().shape == (4,)
 assert x.remove_dim(1).shape == (3,)
 ```
+
+For integer and boolean inputs, `mean()` passes `dtype=torch.get_default_dtype()`
+to PyTorch when `dtype` is omitted or `None`. This convention applies to global,
+numeric-axis, and named-axis reductions. It does not change the input dtype or
+storage, integer sums, floating/complex means, or native `.raw.mean()` behavior.
+An explicit `dtype` follows PyTorch, including its rejection of integer/bool
+output dtypes.
 
 Reductions accept integer axes, negative axes, and tuples, with `dim` and
 `keepdim` as native spelling aliases. Omitting axes reduces all dimensions.
@@ -129,7 +137,7 @@ without reshaping them. Training also transfers batches for `fit(on=...)`.
 
 ```python
 linear = nn.Linear(2, 1)
-prediction = linear(matrix.raw)
+prediction = linear(matrix.astype("float32").raw)
 assert prediction.shape == (2, 1)
 
 gradient = ml.grad(lambda value: value.square().sum())

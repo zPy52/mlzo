@@ -11,6 +11,61 @@ import mlzo as ml
 from mlzo.errors import ConfigurationError
 
 
+def test_literal_integer_mean_preserves_construction_and_sum_dtype():
+    x = ml.tensor([[1, 2], [3, 4]])
+    raw = x.raw
+    torch.testing.assert_close(x.mean(axis=1).raw, torch.tensor([[1.5], [3.5]]))
+    assert x.raw is raw and x.dtype == torch.int64
+    assert x.sum().dtype == torch.int64
+    with pytest.raises(RuntimeError):
+        raw.mean()
+
+
+def test_quantized_mean_retains_native_dtype():
+    raw = torch.quantize_per_tensor(torch.tensor([[1., 2.], [3., 4.]]),
+                                   scale=0.1, zero_point=0, dtype=torch.qint8)
+    actual = ml.wrap(raw).mean(axis=1).raw
+    expected = raw.mean(dim=1, keepdim=True)
+    assert actual.dtype == expected.dtype
+    torch.testing.assert_close(actual.dequantize(), expected.dequantize())
+
+
+@pytest.mark.parametrize("input_dtype", [torch.int32, torch.int64, torch.bool])
+@pytest.mark.parametrize("default_dtype", [torch.float32, torch.float64])
+def test_integral_mean_uses_current_default_or_explicit_dtype(input_dtype, default_dtype):
+    raw = torch.tensor([[1, 0], [1, 1]], dtype=input_dtype)
+    x = ml.tensor(raw, axes=("batch", "features"))
+    previous = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(default_dtype)
+        for options, dim, keep in [({}, None, True), ({"axis": 1}, 1, True),
+                                   ({"axis": "features", "keepdims": False}, 1, False)]:
+            for dtype in (None, torch.float64, "float32"):
+                actual = x.mean(**options, dtype=dtype)
+                expected_dtype = default_dtype if dtype is None else getattr(torch, dtype) if isinstance(dtype, str) else dtype
+                torch.testing.assert_close(actual.raw, torch.mean(raw, dim=dim, keepdim=keep, dtype=expected_dtype))
+            assert x.mean(**options).dtype == default_dtype
+        assert x.mean("features").axes == ("batch", "features")
+        assert x.mean("features", keepdims=False).axes == ("batch",)
+        with pytest.raises(RuntimeError):
+            torch.mean(raw, dtype=torch.int64)
+        with pytest.raises(RuntimeError):
+            x.mean(dtype=torch.int64)
+    finally:
+        torch.set_default_dtype(previous)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.complex64, torch.complex128])
+def test_floating_and_complex_mean_keep_native_dtype_and_graph(dtype):
+    raw = torch.tensor([[1, 2], [3, 4]], dtype=dtype, requires_grad=True)
+    x = ml.wrap(raw)
+    for requested in (None, torch.complex128):
+        actual = x.mean(axis=1, dtype=requested).raw
+        expected = torch.mean(raw, dim=1, keepdim=True, dtype=requested)
+        torch.testing.assert_close(actual, expected)
+        assert actual.grad_fn is not None
+
+
 @pytest.mark.parametrize("shape, expected", [((), (1, 1)), ((0,), (0, 1)), ((3,), (3, 1)), ((2, 3), (2, 3)), ((2, 1, 3), (2, 1, 3))])
 def test_construction_normalizes_only_at_the_boundary(shape, expected):
     raw = torch.zeros(shape)

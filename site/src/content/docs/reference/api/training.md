@@ -31,7 +31,7 @@ mlzo.train(
 
 Returns a deferred `Run`. Model inputs require data and exactly one of `loss` or `step`. Training instances and importable zero-argument training factories supply their own steps. See the [configuration reference](../../configuration/) for every option, default, and validation rule.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/training/run.py#L237).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/training/run.py#L239).
 
 ## Run
 
@@ -78,6 +78,8 @@ Execute toward a total iteration/epoch target, or submit to a cluster.
 
 Local execution is synchronous. `wait=False` is accepted only for a
 cluster's durable submission. Steps count algorithm calls, not updates.
+Unknown-length data requires steps, even for finite streams. With
+accumulation and unknown epoch length, decay horizons must be explicit.
 
 ### Run.wait
 

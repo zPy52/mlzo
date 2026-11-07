@@ -146,6 +146,9 @@ Mean over integer or named axes; keep all reduced dimensions by default.
 
 `dim` and `keepdim` retain their PyTorch spellings. Omit axes or use
 None for a global reduction. A positional keepdim boolean is accepted.
+Integer/bool inputs with dtype omitted or None use
+torch.get_default_dtype(). Other inputs and explicit dtypes follow
+PyTorch. The input dtype/storage and native .raw.mean() are unchanged.
 
 ### Tensor.sum
 
@@ -202,7 +205,7 @@ mlzo.wrap(value: torch.Tensor | Tensor) -> Tensor
 
 Wraps a native tensor without conversion, normalization, copying, or detaching: `wrap(native).raw is native`. An existing MLZO wrapper is returned unchanged.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/transforms/tensor.py#L303).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/transforms/tensor.py#L310).
 
 ## tensor
 

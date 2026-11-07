@@ -84,7 +84,7 @@ NOTES = {
     "linear": "Returns a linear decay specification. An omitted horizon must be inferable for automatic training.",
     "cosine": "Returns a cosine decay specification with `min_factor` as the final base-rate multiplier.",
     "exponential": "Returns geometric decay per successful optimizer update after optional warmup.",
-    "DataPipeline": "Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned.",
+    "DataPipeline": "Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned. Known indexed worker shards have exact batch counts; arbitrary native iterable shards with multiple workers report unknown length.",
     "ArtifactRef": "A local immutable inference artifact reference. It is distinct from a resumable training checkpoint.",
     "ArtifactRef.artifact_id": "Returns the identity recorded in the artifact manifest.",
     "Deployment": "A synchronous predictor in the current process. Use `deploy()` or its context manager to load and release the model.",

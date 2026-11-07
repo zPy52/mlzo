@@ -1,37 +1,197 @@
 # Data pipelines
 
-`data(source)` creates immutable configuration. Chain methods return new
-pipelines. Creating or serializing a pipeline does not invoke its factory,
-iterate its data, read files, decode images, or contact S3. Supplied collection
-contents and native objects remain caller-owned and may still be mutable.
+`ml.data(...)` records immutable, ordered pipeline configuration. Each chained
+method returns a new pipeline. Construction and serialization do not invoke
+factories, call `get`, iterate samples, read files, decode images, or contact S3.
+They can validate metadata such as paired column lengths. Supplied native objects
+and collection contents remain caller-owned and may still be mutable.
+
+## Choose a source
 
 ```python
-from mlzo.data import data
+import mlzo as ml
+import torch
 
-pipeline = data(records).map(transform).shuffle(seed=42).batch(32)
-for batch in pipeline.build(epoch=1):
-    ...
+X = torch.arange(48, dtype=torch.float32).reshape(12, 4)
+y = torch.arange(12) % 2
+train = ml.data(X, y).batch(4)
+
+# No Dataset subclass is needed.
+def get_sample(i):
+    return X[i], y[i]
+
+indexed = ml.data(get=get_sample, length=len(X)).batch(4)
+
+def generate():
+    for i in range(len(X)):
+        yield X[i], y[i]
+
+streamed = ml.data(stream=generate).batch(4)
 ```
 
-`build(epoch=0)` constructs the source on the execution worker. Each factory
-is called once per build, with no arguments. `iter(pipeline)` builds epoch zero.
-Map, normalization, tokenization, and batching run lazily in their declared
-order. A map after batching receives a batch. A shuffle after batching shuffles
-whole batches. Batching uses `torch.utils.data.default_collate` unless the caller
-supplies `collate_fn`.
+| Form | Contract |
+| --- | --- |
+| `data(X, y)` | Equally sized tensor, NumPy, or sequence columns, paired by leading sample index |
+| `data(get=fn, length=N)` | A synchronous index function and a nonnegative integer length; supply both |
+| `data(stream=factory)` | A synchronous zero-argument factory returning a fresh finite or infinite iterable per pass |
+| `data(dataset)` | Native `Dataset` or `IterableDataset` |
+| `data(loader)` | Existing native `DataLoader`; a no-operation build returns that exact loader |
+| `data(source)` | A tensor, mapping of equally sized string-keyed columns, sequence, or other local iterable |
+| `data(factory)` | A zero-argument factory returning a supported source at build time |
+| `data(path)` | An explicit supported file or image-directory configuration |
 
-Sources can be native PyTorch `Dataset`, `IterableDataset`, or `DataLoader`
-objects, sequences of records, tensors with a leading sample dimension, or
-mappings of string field names to equally sized tensors/sequences. Other
-iterables are supported locally. A factory must return one of these source
-types. Use a named zero-argument factory in an importable project module for
-remote runs. Arbitrary iterators and native objects are not automatically
-transportable.
+MLZO unwraps tensor columns without reshaping them. A **single sequence of sample
+pairs stays row-major**: `data([(x0, y0), (x1, y1)])` describes two samples, not
+two columns. Use two positional arguments to declare columns. Source modes are
+exclusive; mixing `get`/`length`, `stream`, and a positional source raises an error.
 
-A native `DataLoader` without additional pipeline configuration is returned
-unchanged by `build()`. Added operations consume its existing batches; they do
-not change its sampler or batch size. Configure its workers directly. Providing
-its dataset instead permits pipeline worker configuration.
+`build(epoch=0)` opens the configured source for execution. Ordinary source
+factories run at build; stream factories create iterators for each pass, and
+`get(i)` runs only when a sample is requested. JSON arrays and tensor files read
+at build, whereas JSONL and sample decoding read during iteration. Building a
+pipeline is therefore different from consuming samples. `iter(pipeline)` builds
+epoch zero.
+
+Remote runs require importable functions in the submitted project or a
+transportable file/pipeline recipe. Local lambdas and closures can be convenient,
+but arbitrary native objects and iterators are not automatically transportable.
+Paths hidden inside factories remain the author's responsibility.
+
+## Transform samples or current items
+
+```python
+def augment(sample):
+    features, target = sample
+    return features + 1, target
+
+def is_valid(sample):
+    return bool(torch.isfinite(sample[0]).all())
+
+def summarize(batch):
+    features, targets = batch
+    return {"mean": features.mean(dim=0), "targets": targets}
+
+pipeline = (
+    ml.data(get=get_sample, length=len(X))
+    .transform(augment)
+    .filter(is_valid)
+    .shuffle(seed=42, buffer=64)
+    .batch(4)
+    .map(summarize)
+)
+```
+
+Use `transform(fn)` on individual samples before `batch`. `map(fn)` transforms
+the current items, so a map after batching receives a batch. Each function takes
+one complete item, including its tuple or mapping structure. Filtering is lazy
+and gives the result unknown length. A shuffle after batching shuffles batches.
+Pipeline order is part of the configuration; methods do not mutate earlier pipelines.
+
+## Batch with native tensor outputs
+
+```python
+features, targets = next(iter(train))
+assert isinstance(features, torch.Tensor)
+assert isinstance(targets, torch.Tensor)
+assert features.shape == (4, 4)
+assert targets.shape == (4, 1)
+
+native_shapes = ml.data(X, y).batch(4, normalize=False)
+assert next(iter(native_shapes))[1].shape == (4,)
+```
+
+Default batching collates samples using native PyTorch rules, unwraps MLZO tensor
+leaves, and then normalizes scalar/one-dimensional tensor leaves in the completed
+batch. Outputs remain **native `torch.Tensor` leaves**. Feature vectors stack to
+`(B, F)`, and scalar labels stack to `(B, 1)`. Samples are not normalized to
+`(F, 1)` before stacking. Higher-rank batch leaves keep their shape.
+
+`batch(size, normalize=False)` retains native collated shapes. A custom
+`combine(samples)` controls the exact output shape; MLZO does not normalize its
+result. `collate_fn` remains a legacy alias for `combine`. Supply only one.
+
+```python
+def combine(samples):
+    features, targets = zip(*samples)
+    return torch.stack(features), torch.stack(targets)
+
+custom = ml.data(X, y).batch(4, combine=combine)
+assert next(iter(custom))[1].shape == (4,)
+```
+
+## Shuffle, workers, and native loader options
+
+```python
+# Put this in an importable script with a guarded process entrypoint.
+if __name__ == "__main__":
+    parallel = ml.data(get=get_sample, length=len(X)).batch(
+        4, shuffle=True, workers=4, prefetch=2,
+        drop_last=True, pin_memory=False,
+    )
+```
+
+Batch configuration accepts `shuffle`, `workers`, `prefetch`, `combine`, `sampler`,
+`drop_last`, `pin_memory`, and `normalize`. Without worker configuration, loading
+runs in the caller. `workers` uses native DataLoader worker processes for batching;
+`prefetch=2` means two batches per worker, not two source samples. Positive prefetch
+requires positive workers. Standalone `.workers(count)` and `.prefetch(count)`
+remain available, as does the older `workers(..., prefetch_factor=...)` spelling.
+On spawn platforms, worker functions and factories must be importable and pickleable,
+and the script must guard process startup.
+
+`shuffle(seed=42)` requires known finite upstream length for a full permutation.
+For streams and filtered sources, use `shuffle(seed=42, buffer=1024)`.
+`buffer_size` remains an alias for `buffer`; supply only one. Buffer shuffle uses
+bounded memory and does not promise a uniform full permutation. Each epoch uses
+`seed + epoch`; repeated builds reproduce that order only when the upstream
+items and their order also agree. Native samplers and random user transforms
+retain their own randomness rules.
+
+A native `sampler` can select indexable samples in `batch(..., sampler=...)`.
+Combining a sampler with shuffle is an error. For full DataLoader configuration,
+including `batch_sampler` and other advanced native options, construct the loader
+first:
+
+```python
+loader = torch.utils.data.DataLoader(
+    torch.utils.data.TensorDataset(X, y), batch_size=4,
+    num_workers=0, pin_memory=False,
+)
+adapted = ml.data(loader)
+assert adapted.build() is loader
+```
+
+MLZO does not silently reconfigure an existing loader. Its sampler, batch size,
+collation, and workers remain native settings. Downstream item operations consume
+its existing batches; choose `loader.dataset` instead when MLZO should own batching.
+The no-operation adapter also preserves the loader's native label shapes.
+
+## Stream safely
+
+A finite stream can complete an epoch. An infinite stream needs a finite training
+step budget, such as `run.fit(steps=100, on="cpu")`; an epoch target alone cannot
+finish an infinite pass. Unknown-length streams and filters require a shuffle buffer.
+
+With multiple workers, `data(stream=factory)` requires an importable deterministic
+factory with the explicit attribute `factory.mlzo_replayable = True`. Each worker
+replays that sequence and takes a strided shard. This prevents duplicate output
+samples across workers only when every replay produces the same sequence.
+It can repeat source reads, so do not make this promise for a live, destructive,
+or independently random source.
+
+```python
+# Define this factory at module scope in an importable project file.
+def replayable_samples():
+    for i in range(100):
+        yield torch.tensor([float(i)]), i % 2
+
+replayable_samples.mlzo_replayable = True
+```
+
+Without that promise, do not replicate a `stream` factory across workers.
+Native `IterableDataset` authors are responsible for safe worker sharding in
+their own iterator. There is no distributed sharding or exact cursor-resume
+contract. One-shot iterators remain consumed and cannot resume.
 
 ## File formats
 
@@ -44,9 +204,11 @@ its dataset instead permits pipeline worker configuration.
 | `.pt`, `.pth` | One tensor, or a nonempty mapping of string names to tensors with equal leading dimensions | Loaded on CPU at build with `torch.load(weights_only=True)` |
 
 For example, `torch.save({"x": inputs, "y": targets}, "samples.pt")` produces
-records with `x` and `y` fields. No pickle object loading or arbitrary serialized
-datasets are supported. A list-valued JSON field remains a Python list; map it
-to a tensor explicitly if the desired collation needs a tensor.
+records with `x` and `y` fields. Built-in supervised steps expect a pair, so map
+these records to `(inputs, targets)` or use a custom `step(model, batch)`.
+No pickle object loading or arbitrary serialized datasets are supported. A
+list-valued JSON field remains a Python list; map it to a tensor explicitly if
+the desired collation needs a tensor.
 
 S3 paths must name a specific object with a supported suffix, for example
 `s3://bucket/train.jsonl`. Prefix listing and format guessing are unsupported.
@@ -58,7 +220,7 @@ credential resolution. An omitted `boto3` dependency raises
 
 ```python
 pipeline = (
-    data("images/")
+    ml.data("images/")
     .images(size=(224, 224), labels="class_subdirectories")
     .normalize("imagenet")
     .shuffle(seed=42)
@@ -66,7 +228,7 @@ pipeline = (
 )
 ```
 
-Image decoding requires optional Pillow, imported only on sample access.
+Install `.[vision]` for Pillow, which MLZO imports only on sample access.
 `images(path, ..., labels=...)` is also available from `mlzo.data`. Decoding
 returns float32 tensors in `[0, 1]`, with shape `(channels, height, width)`.
 `size` is `(height, width)` and applies bilinear resizing. Modes are `RGB` and
@@ -92,47 +254,19 @@ targets and do not mutate input tensors.
 
 `tokenize(tokenizer, key=None)` calls the supplied tokenizer on an item, or
 replaces one explicit record field with its result. No vocabulary or padding is
-selected. Supply a custom `batch(..., collate_fn=...)` for padding and masks.
+selected. Supply a custom `batch(..., combine=...)` for padding and masks.
 
-## Shuffling, workers, and restart limits
+## Resume and transport
 
-`shuffle(seed)` buffers the entire upstream sequence and requires a known
-finite length. For JSONL or other streams use
-`shuffle(seed, buffer_size=1024)`. Buffered shuffling uses bounded memory and
-does not promise a uniform full permutation. Each shuffle uses `seed + epoch`.
-Rebuilding with the same epoch reproduces that permutation when the upstream
-items and their order agree. Native sampler randomness, source randomness, and
-arbitrary user transforms retain their own semantics.
+Reiterable sources can restart an epoch. Partial epochs restart on training
+resume; sampler, worker, and prefetch cursors are not restored exactly.
 
-`workers(count, prefetch_factor=None)` reads indexable source samples in CPU
-workers while preserving their order. Pipeline operations run in the calling
-process, so their order is retained. JSON arrays, tensor files, local image
-directories, sequences, and map-style datasets support workers. JSONL,
-`IterableDataset`, arbitrary iterables, and preconfigured native loaders cannot
-be repartitioned by this adapter. Unsupported configurations raise
-`UnsupportedFeatureError`.
-
-`prefetch(factor)` sets the number of source items prefetched per worker and
-requires a positive worker count at build time. It does not create an
-asynchronous iterator when workers are zero. Follow native PyTorch process
-entrypoint rules when using workers on platforms that spawn processes.
-
-Reiterable sources can start another pass. A supplied one-shot iterator stays
-consumed; a factory can create a fresh iterator at each build. There is no exact
-cursor resume guarantee for arbitrary iterators, native loaders, or prefetched
-samples. No distributed sharding, caching, or GPU preprocessing is implemented.
-
-## Transport and artifact staging
-
-`pipeline.to_spec(encode)` and `DataPipeline.from_spec(spec, decode)` use version
-1 configuration dictionaries. Each encoder/decoder receives exactly one value
-per call. Source values and individual operation/source options go through the
-codec. Structural metadata and loader flags are plain primitives. A remote
-codec must reject unsupported native objects and nonimportable callables.
-Neither direction builds the source or calls a dataset factory.
-
-`local_paths()` returns a tuple of absolute `pathlib.Path` objects for explicit
-local file/directory sources. `rewrite_local_paths(rewrite)` returns new
-configuration after calling `rewrite(absolute_path)` once. It performs no file
-I/O. Paths hidden in factories or transforms cannot be discovered or rewritten;
-those callables are responsible for worker-accessible locations.
+`to_spec(encode)` and `DataPipeline.from_spec(spec, decode)` describe pipeline
+configuration without building it. Source values and individual operation/source
+options pass through the supplied codec; structural metadata and loader flags
+use ordinary values. A remote codec must reject unsupported native objects and
+nonimportable callables. Indexed and streaming sources transport their
+importable callables rather than sample contents. `local_paths()` identifies
+explicit local paths, and `rewrite_local_paths(rewrite)` returns rewritten
+configuration without file I/O. Paths hidden inside factories cannot be
+identified automatically.

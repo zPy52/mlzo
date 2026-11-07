@@ -24,7 +24,24 @@ This snippet uses `model` and `batches` prepared as in the [quickstart](../../st
 | `bce` | Binary cross entropy for probabilities |
 | `bce_with_logits`, `bce_logits` | Binary cross entropy with logits |
 
-You can pass a callable `loss(prediction, target)`. Supported native PyTorch loss instances preserve their mean or sum reduction. A loss with `reduction="none"` needs a custom step that reduces it to a scalar.
+MLZO's supervised cross-entropy adapter accepts integral class targets shaped
+`(B, 1)` when logits have shape `(B, C)`, squeezing only that final singleton
+axis. This applies to `loss="cross_entropy"` and supported `nn.CrossEntropyLoss`
+instances passed as `loss=`. It does not coerce dtypes. Dense classification and
+probability targets retain their shapes. Direct native loss calls keep native
+shape requirements; MLZO does not change arbitrary PyTorch functions.
+
+You can pass a callable `loss(prediction, target)`. Custom losses receive target
+shapes unchanged. Supported native PyTorch loss instances preserve their mean or
+sum reduction. A loss with `reduction="none"` needs a custom scalar step. Continue
+to use `train(..., loss=...)`; there is no separate `mlzo.loss` constructor.
+
+`fit(on=...)` moves nested batch tensors to the execution device. At that boundary,
+MLZO unwraps `Tensor` and `NamedTensor` leaves without reshaping them. Native models
+and custom steps receive native tensors. Default pipeline collation produces
+`(B, F)` vector features and `(B, 1)` scalar labels; use
+`batch(..., normalize=False)` or explicit custom collation for native label shapes.
+See [data pipelines](../data/) and [tensor conventions](../transforms/).
 
 ## Write a function step
 
@@ -35,9 +52,13 @@ import torch.nn.functional as F
 
 def step(model, batch):
     prediction = model(batch["x"])
-    loss = F.cross_entropy(prediction, batch["y"])
-    return mlzo.Step(loss=loss, weight=len(batch["y"]),
-                     metrics={"accuracy": (prediction.argmax(-1) == batch["y"]).float().mean()})
+    target = batch["y"]
+    # This step expects integral class labels and ordinary (B, C) logits.
+    if target.ndim == 2 and target.shape[1] == 1:
+        target = target.squeeze(1)
+    loss = F.cross_entropy(prediction, target)
+    return mlzo.Step(loss=loss, weight=len(target),
+                     metrics={"accuracy": (prediction.argmax(-1) == target).float().mean()})
 
 run = mlzo.train(model, record_batches, step=step, accumulate=4)
 ```

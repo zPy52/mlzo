@@ -8,12 +8,25 @@ Read the [data pipelines guide](../../../guides/data/) for examples and usage co
 ## data
 
 ```python
-mlzo.data(source: Any) -> DataPipeline
+mlzo.data(
+    source: Any = None,
+    targets: Any = _MISSING,
+    *,
+    get: Callable[[int], Any] | None = None,
+    length: int | None = None,
+    stream: Callable[[], Iterable] | None = None,
+) -> DataPipeline
 ```
 
-Describe a source lazily. An existing pipeline is returned unchanged.
+Describe one source, input/target columns, an index function, or a stream.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L516).
+get and length must be supplied together. stream creates a fresh iterator
+for each pass. These modes cannot be combined. A single sequence of pairs
+remains a sequence of samples; use two arguments to describe columns.
+Existing pipelines are returned unchanged and native loaders retain their
+identity on build. No sample function or stream factory is invoked here.
+
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L535).
 
 ## images
 
@@ -29,7 +42,7 @@ mlzo.images(
 
 Describe a local image directory with an explicit label convention.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L521).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L567).
 
 ## DataPipeline
 
@@ -39,9 +52,9 @@ Declared fields:
 source: Any
 ```
 
-Immutable ordered pipeline configuration. Source objects remain caller-owned. A build opens data; construction and serialization do not.
+Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned.
 
-[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L189).
+[View source](https://github.com/zPy52/mlzo/blob/main/src/mlzo/data/pipeline.py#L191).
 
 ### DataPipeline.map
 

@@ -40,7 +40,9 @@ GROUPS = {
         "cluster/client.py": "cluster Cluster Invitation run", "cluster/coordinator.py": "Coordinator",
         "cluster/worker.py": "Worker",
     }),
-    "transforms": ("Transforms and named tensors", "guides/transforms", {"transforms/named.py": "tensor NamedTensor"}),
+    "transforms": ("Tensors and transforms", "guides/transforms", {
+        "transforms/tensor.py": "Tensor wrap", "transforms/named.py": "tensor NamedTensor",
+    }),
     "recipes": ("DQN recipe", "guides/dqn", {"recipes/dqn.py": "dqn DQNTraining"}),
     "errors": ("Exceptions", "help/troubleshooting", {
         "errors.py": "MLZOError ConfigurationError UnsupportedFeatureError TrainingError CheckpointError ClusterError",
@@ -82,11 +84,11 @@ NOTES = {
     "linear": "Returns a linear decay specification. An omitted horizon must be inferable for automatic training.",
     "cosine": "Returns a cosine decay specification with `min_factor` as the final base-rate multiplier.",
     "exponential": "Returns geometric decay per successful optimizer update after optional warmup.",
-    "DataPipeline": "Immutable ordered pipeline configuration. Source objects remain caller-owned. A build opens data; construction and serialization do not.",
+    "DataPipeline": "Immutable ordered pipeline configuration. Construction and serialization do not call sample functions or read data. A build opens sources; iteration requests samples. Source objects remain caller-owned.",
     "ArtifactRef": "A local immutable inference artifact reference. It is distinct from a resumable training checkpoint.",
     "ArtifactRef.artifact_id": "Returns the identity recorded in the artifact manifest.",
     "Deployment": "A synchronous predictor in the current process. Use `deploy()` or its context manager to load and release the model.",
-    "Deployment.predict": "Moves nested tensor inputs to the configured device and predicts in eval mode under `torch.inference_mode()`. Raises after shutdown.",
+    "Deployment.predict": "Unwraps nested MLZO tensor leaves without reshaping, moves native tensors to the configured device, and predicts in eval mode under `torch.inference_mode()`. Raises after shutdown.",
     "Deployment.status": "Reports local readiness and artifact identity.",
     "Deployment.device": "Returns the device used by this local predictor.",
     "Deployment.shutdown": "Releases the model. Repeated shutdown is safe.",
@@ -118,7 +120,28 @@ NOTES = {
     "Coordinator.submitter_token": "Returns the submitter secret. It is distinct from the admin credential.",
     "Invitation.encode": "Returns the transferable secret invitation envelope. Treat the result as a credential.",
     "Invitation.decode": "Validates an encoded invitation envelope or accepts an existing invitation. It does not establish CA trust.",
-    "NamedTensor": "An explicit axis-name wrapper over an ordinary tensor. See the guide for broadcasting, flatten placement, and unsupported operations.",
+    "Tensor": "An explicit lightweight wrapper over native tensor storage and autograd. Only declared methods are supported; use `.raw` for other native operations, modules, optimizers, function transforms, and compiled regions. Basic integer indexing keeps singleton axes; any advanced/boolean component makes the whole index native. Explicit shape operations keep their requested rank.",
+    "tensor": "Converts with `torch.as_tensor` and returns `Tensor`, or `NamedTensor` with axes. Default normalization turns scalars into `(1, 1)` and vectors into `(N, 1)`; `normalize=False` preserves input shape. Names must match the final shape, so named vectors need `normalize=False` or two names. Existing storage/history survive when dtype and device permit; detach explicitly to disable an existing graph.",
+    "wrap": "Wraps a native tensor without conversion, normalization, copying, or detaching: `wrap(native).raw is native`. An existing MLZO wrapper is returned unchanged.",
+    "Tensor.shape": "Returns the underlying tensor's exact shape.",
+    "Tensor.ndim": "Returns the underlying tensor's rank.",
+    "Tensor.dtype": "Returns the underlying tensor's PyTorch dtype.",
+    "Tensor.device": "Returns the underlying tensor's device.",
+    "Tensor.requires_grad": "Reports whether autograd tracks the underlying tensor.",
+    "Tensor.to": "Uses native PyTorch conversion semantics and wraps the result. Named inputs retain names.",
+    "Tensor.astype": "Converts dtype using a torch dtype or its string name, such as `float32`. Named inputs retain names.",
+    "Tensor.on": "Transfers to a device using native PyTorch semantics. Named inputs retain names.",
+    "Tensor.remove_dim": "Removes only the specified singleton dimension; raises if its size is not one. The result is not normalized.",
+    "Tensor.transpose": "Swaps two dimensions, defaulting to the last two. Explicit shape results are not normalized.",
+    "Tensor.reorder": "Permutes dimensions in the supplied integer order.",
+    "Tensor.flatten": "Flattens the selected positional dimension range using native PyTorch semantics, without result normalization.",
+    "Tensor.detach": "Detaches from autograd and wraps the result. Named inputs retain names.",
+    "Tensor.clone": "Clones native storage with the supplied PyTorch options. Named inputs retain names.",
+    "Tensor.backward": "Delegates differentiation to the native tensor, unwrapping an optional MLZO gradient tensor.",
+    "NamedTensor": "A Tensor subclass with one unique nonempty name per dimension. Inherits Tensor conversion and reduction methods. Named arithmetic aligns and broadcasts shared axes, then appends new right-hand names. Unnamed nonscalar operands are rejected. See the guide for flatten placement and operations that drop names.",
+    "NamedTensor.transpose": "Swaps dimensions and their axis names, defaulting to the last two dimensions.",
+    "NamedTensor.reorder": "Permutes dimensions and their names in the supplied integer order.",
+    "NamedTensor.remove_dim": "Removes a singleton dimension and its name without normalizing the result.",
     "NamedTensor.to": "Converts the underlying tensor using PyTorch semantics while retaining names.",
     "NamedTensor.clone": "Clones the underlying tensor and retains axis names.",
     "NamedTensor.detach": "Detaches the underlying tensor from autograd and retains axis names.",
@@ -251,7 +274,7 @@ def main():
         if group == "optimization":
             page += "\n## schedules\n\n`mlzo.schedules` is the schedule module. Its `constant`, `linear`, `cosine`, and `exponential` constructors are also exported directly from `mlzo`.\n"
         if group == "transforms":
-            page += "\n## PyTorch aliases\n\n`mlzo.transforms` contains the same aliases and named-tensor helpers exported at the top level.\n\n| MLZO | PyTorch reference |\n| --- | --- |\n"
+            page += "\n## PyTorch aliases\n\n`mlzo.transforms` contains the same aliases and tensor helpers exported at the top level. Use native tensor inputs and `.raw` inside transformed functions or compiled regions; wrappers have no transparent torch dispatch.\n\n| MLZO | PyTorch reference |\n| --- | --- |\n"
             for name in "grad vmap jacrev jacfwd hessian jvp vjp functional_call jit".split():
                 original = "compile" if name == "jit" else "func." + name
                 page += f"| `mlzo.{name}` | [`torch.{original}`](https://docs.pytorch.org/docs/stable/generated/torch.{original}.html) |\n"

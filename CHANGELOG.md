@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `tensor()` now returns `Tensor` by default and `NamedTensor` with axes.
+  Scalars and vectors normalize to matrices, reductions keep dimensions, and
+  basic integer indexing keeps singleton dimensions. `normalize=False`,
+  `wrap()`, and `.raw` provide explicit shape and native-tensor boundaries.
+  See [migration examples](src/mlzo/transforms/README.md#migrate-from-the-previous-native-default).
+- Declarative paired columns, `get`/`length`, and `stream` data sources.
+  Sample transforms, lazy filters, configurable worker batching, custom combine
+  functions, and native DataLoader escape hatches.
+- Training and local prediction unwrap MLZO tensor leaves without reshaping.
+  The supervised cross-entropy adapter accepts integral `(B, 1)` class targets
+  for `(B, C)` logits; custom losses keep their target shapes.
+
 ## 0.1.0a1
 
 First Python alpha, distributed under the MIT license and prepared for later publication.

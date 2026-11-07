@@ -37,7 +37,18 @@ with mlzo.deploy(artifact, device="cpu") as predictor:
     print(predictor.status())
 ```
 
-`deploy()` creates a local synchronous `Deployment`. It moves tensor inputs in dictionaries, lists, tuples, and namedtuples to the configured device and calls the model under `torch.inference_mode()`. Other values pass through. Outputs retain their ordinary types and device; the model validates shapes and dtypes.
+`deploy()` creates a local synchronous `Deployment`. It unwraps MLZO `Tensor`
+and `NamedTensor` leaves in dictionaries, lists, tuples, and namedtuples, without
+reshaping them. It moves native tensors to the configured device and calls the
+model under `torch.inference_mode()`. Other values pass through. Outputs retain
+their ordinary types and device; the model validates shapes and dtypes.
+
+For example, `predictor.predict(mlzo.wrap(native_inputs))` preserves the input
+shape. `mlzo.tensor(vector)` constructs a column by default; use
+`mlzo.tensor(vector, normalize=False)` when the model expects a vector.
+Direct calls to the model returned by `load_artifact` need `.raw` explicitly,
+such as `model(wrapped_inputs.raw)`. Native modules do not dispatch transparently
+through the wrapper. See [tensor boundaries](../transforms/).
 
 `shutdown()` releases the model and is idempotent. The context manager calls it on exit. Further predictions or context entry raise `MLZOError`. A non-`None` `on=` target raises `UnsupportedFeatureError`; this release has no inference server or remote inference deployment.
 

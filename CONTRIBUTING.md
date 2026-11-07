@@ -18,6 +18,9 @@ Every task thread must use its own branch and worktree. Keep one focused change
 in that workspace, and reuse it when resuming the same task. Do not implement
 changes directly in the shared main checkout.
 
+Name new task branches `mlzo/<change-name>`, for example
+`mlzo/checkpoint-restore`.
+
 First inspect `git status --short --untracked-files=all` and
 `git worktree list --porcelain`. If T3 or another tool already prepared a
 worktree and branch for this task, use them. Do not create a second worktree
@@ -27,7 +30,7 @@ Otherwise, after choosing the base and fresh names:
 
 ```sh
 git fetch origin main
-git worktree add -b fix/checkpoint-restore ../MLZO-checkpoint-restore origin/main
+git worktree add -b mlzo/checkpoint-restore ../MLZO-checkpoint-restore origin/main
 cd ../MLZO-checkpoint-restore
 ```
 

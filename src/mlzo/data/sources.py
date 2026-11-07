@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from mlzo.errors import ConfigurationError, UnsupportedFeatureError
-from mlzo.transforms.named import NamedTensor
+from mlzo.transforms.tensor import Tensor
 
 
 FILE_SUFFIXES = {".json", ".jsonl", ".pt", ".pth"}
@@ -35,7 +35,7 @@ class Source:
 
 
 def _raw_column(value: Any) -> Any:
-    return value.raw if isinstance(value, NamedTensor) else value
+    return value.raw if isinstance(value, Tensor) else value
 
 
 def _is_numpy_array(value: Any) -> bool:

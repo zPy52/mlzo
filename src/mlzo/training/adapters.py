@@ -18,9 +18,20 @@ def _sum(value: torch.Tensor) -> torch.Tensor:
 
 
 def builtin_loss(prediction: torch.Tensor, target: torch.Tensor, loss: Any) -> Step | None:
-    """Return a numerator-derived mean and the actual PyTorch denominator."""
+    """Return a numerator-derived mean and the actual PyTorch denominator.
+
+    Only built-in cross entropy adapts integral class indices from (B, 1) to
+    (B,) for plain (B, C) logits. Dense targets, probability targets and other
+    losses keep their shapes and dtypes. Custom losses bypass this policy.
+    """
     reduction = "mean" if isinstance(loss, str) else getattr(loss, "reduction", None)
     if isinstance(loss, (str, nn.CrossEntropyLoss)) and (not isinstance(loss, str) or loss == "cross_entropy"):
+        if (
+            prediction.ndim == 2
+            and target.shape == (prediction.shape[0], 1)
+            and target.dtype in {torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64}
+        ):
+            target = target.squeeze(1)
         weight = None if isinstance(loss, str) else loss.weight
         ignore_index = -100 if isinstance(loss, str) else loss.ignore_index
         smoothing = 0.0 if isinstance(loss, str) else loss.label_smoothing
@@ -31,7 +42,12 @@ def builtin_loss(prediction: torch.Tensor, target: torch.Tensor, loss: Any) -> S
             if weight is None:
                 denominator = float(valid.sum().item())
             else:
-                denominator = float(_sum(weight[target[valid]].detach()).item())
+                indices = target[valid]
+                # uint8 indexes act as masks. Cast only this weight lookup;
+                # cross_entropy still receives the caller's target dtype.
+                if indices.dtype == torch.uint8:
+                    indices = indices.long()
+                denominator = float(_sum(weight[indices].detach()).item())
         if denominator == 0 and reduction in {"mean", "sum"}:
             return Step(loss=prediction.reshape(-1)[:0].sum(), weight=0.0)
         numerator = F.cross_entropy(

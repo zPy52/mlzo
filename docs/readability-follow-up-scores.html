@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLZO readability follow-up</title>
+<style>
+:root { font-family: var(--font-sans, system-ui, sans-serif); color: var(--foreground, #252525); color-scheme: light dark; }
+body { margin: 0; }
+figure { margin: 0; }
+figcaption { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { display: grid; grid-template-columns: 70px minmax(0, 1fr) 68px; align-items: center; gap: 10px; min-height: 32px; font-size: 13px; }
+.track { position: relative; height: 16px; background: var(--secondary, #e8e8e8); border-radius: 3px; overflow: hidden; }
+.bar { display: block; height: 16px; background: var(--chart-1, #2b6eb7); border-radius: 3px; }
+li:first-child .bar { background: var(--muted-foreground, #777777); }
+.scores li:last-child .bar { background: var(--success, #218548); }
+.target { position: absolute; top: 0; bottom: 0; left: 95%; border-left: 1px dashed var(--foreground, #252525); }
+strong { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.scale { display: flex; justify-content: space-between; margin: 6px 78px 0 80px; color: var(--muted-foreground, #6b6b6b); font-size: 11px; }
+p { margin: 12px 0 0; color: var(--muted-foreground, #6b6b6b); font-size: 12px; line-height: 1.5; }
+.timing { margin-top: 24px; }
+</style></head><body>
+<figure class="scores" aria-label="Weighted readability scores on an unchanged zero to ten rubric">
+<figcaption>Readability follow-up · score out of 10</figcaption>
+<ul><li><span>Start</span><span class="track"><span class="bar" style="width:87.60%"></span><span class="target" aria-hidden="true"></span></span><strong>8.76</strong></li>
+<li><span>Round 1</span><span class="track"><span class="bar" style="width:90.30%"></span><span class="target" aria-hidden="true"></span></span><strong>9.03</strong></li>
+<li><span>Round 2</span><span class="track"><span class="bar" style="width:92.00%"></span><span class="target" aria-hidden="true"></span></span><strong>9.20</strong></li>
+<li><span>Round 3</span><span class="track"><span class="bar" style="width:93.60%"></span><span class="target" aria-hidden="true"></span></span><strong>9.36</strong></li>
+<li><span>Round 4</span><span class="track"><span class="bar" style="width:94.90%"></span><span class="target" aria-hidden="true"></span></span><strong>9.49</strong></li>
+<li><span>Round 5</span><span class="track"><span class="bar" style="width:95.20%"></span><span class="target" aria-hidden="true"></span></span><strong>9.52</strong></li></ul>
+<div class="scale" aria-hidden="true"><span>0</span><span>5</span><span>10</span></div>
+<p>Dashed marker: 9.50 target. Fixed rubric and weights; scores are editorial judgments.</p>
+</figure>
+<figure class="timing" aria-label="CPU timing spot check for five hundred updates, lower is faster">
+<figcaption>500 CPU updates · elapsed time</figcaption>
+<ul><li><span>Before</span><span class="track"><span class="bar" style="width:75.38416371452124%"></span></span><strong>263.8 ms</strong></li>
+<li><span>After</span><span class="track"><span class="bar" style="width:73.97984742835564%"></span></span><strong>258.9 ms</strong></li></ul>
+<div class="scale" aria-hidden="true"><span>0</span><span>175</span><span>350 ms</span></div>
+<p>Alternating before/after runs, with ten measurements per version. Identical weights and counters. This spot check does not establish broader performance.</p>
+</figure>
+</body></html>

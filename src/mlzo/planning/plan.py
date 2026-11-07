@@ -23,7 +23,11 @@ def _metadata(value: Any, depth: int = 0) -> Any:
     if depth > 6:
         return {"type": type(value).__qualname__}
     if isinstance(value, torch.Tensor):
-        return {"type": type(value).__qualname__, "dtype": str(value.dtype), "device": str(value.device)}
+        return {
+            "type": type(value).__qualname__,
+            "dtype": str(value.dtype),
+            "device": str(value.device),
+        }
     if isinstance(value, Mapping):
         return {str(key): _metadata(item, depth + 1) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -32,15 +36,30 @@ def _metadata(value: Any, depth: int = 0) -> Any:
         return str(value)
     if isinstance(value, torch.optim.Optimizer):
         return {
-            "type": type(value).__qualname__, "kind": "instance",
-            "groups": [{str(key): _metadata(item, depth + 1) for key, item in group.items() if key != "params"}
-                       for group in value.param_groups],
+            "type": type(value).__qualname__,
+            "kind": "instance",
+            "groups": [
+                {
+                    str(key): _metadata(item, depth + 1)
+                    for key, item in group.items() if key != "params"
+                }
+                for group in value.param_groups
+            ],
         }
     if is_dataclass(value) and not isinstance(value, type):
-        return {"type": type(value).__qualname__, **{field.name: _metadata(getattr(value, field.name), depth + 1) for field in fields(value)}}
+        return {
+            "type": type(value).__qualname__,
+            **{
+                field.name: _metadata(getattr(value, field.name), depth + 1)
+                for field in fields(value)
+            },
+        }
     if callable(value):
-        return {"kind": "callable", "module": getattr(value, "__module__", None),
-                "qualname": getattr(value, "__qualname__", type(value).__qualname__)}
+        return {
+            "kind": "callable",
+            "module": getattr(value, "__module__", None),
+            "qualname": getattr(value, "__qualname__", type(value).__qualname__),
+        }
     return {"type": f"{type(value).__module__}.{type(value).__qualname__}"}
 
 
@@ -106,10 +125,20 @@ def _model_info(algorithm: Any) -> tuple[dict[str, Any], dict[str, int], dict[st
     if not isinstance(model, nn.Module):
         if not callable(algorithm):
             raise ConfigurationError("Run.algorithm_input must be a model, Training instance, or training factory.")
-        return ({"kind": "training_factory", "factory": _metadata(algorithm),
-                 "parameter_count": None, "known_parameter_count": 0,
-                 "trainable_parameter_count": None, "known_module_count": 0,
-                 "lazy_modules": {}, "requires_construction": True}, {}, {})
+        return (
+            {
+                "kind": "training_factory",
+                "factory": _metadata(algorithm),
+                "parameter_count": None,
+                "known_parameter_count": 0,
+                "trainable_parameter_count": None,
+                "known_module_count": 0,
+                "lazy_modules": {},
+                "requires_construction": True,
+            },
+            {},
+            {},
+        )
     canonical: dict[int, str] = {}
     aliases: dict[str, str] = {}
     lazy: dict[str, str] = {}
@@ -140,13 +169,20 @@ def _model_info(algorithm: Any) -> tuple[dict[str, Any], dict[str, int], dict[st
             known_count += count
             if parameter.requires_grad:
                 trainable_count += count
-    return ({"kind": "lazy" if isinstance(model, Lazy) else "module",
-             "type": f"{type(model).__module__}.{type(model).__qualname__}",
-             "parameter_count": None if unknown else known_count,
-             "known_parameter_count": known_count,
-             "trainable_parameter_count": None if unknown else trainable_count,
-             "known_module_count": len(canonical), "lazy_modules": lazy,
-             "requires_construction": unknown}, placement_map(model), aliases)
+    return (
+        {
+            "kind": "lazy" if isinstance(model, Lazy) else "module",
+            "type": f"{type(model).__module__}.{type(model).__qualname__}",
+            "parameter_count": None if unknown else known_count,
+            "known_parameter_count": known_count,
+            "trainable_parameter_count": None if unknown else trainable_count,
+            "known_module_count": len(canonical),
+            "lazy_modules": lazy,
+            "requires_construction": unknown,
+        },
+        placement_map(model),
+        aliases,
+    )
 
 
 def _data_info(data: Any) -> dict[str, Any]:
@@ -245,7 +281,11 @@ def plan_run(run: Any, *, on: Any = None, parallel: Any = "auto", example: Any =
     if isinstance(accumulation, bool) or not isinstance(accumulation, int) or accumulation < 1:
         raise ConfigurationError("accumulate must be a positive integer.")
     compilation = config.get("compile", False)
-    if compilation is not None and not isinstance(compilation, bool) and not (isinstance(compilation, str) and compilation == "auto"):
+    if (
+        compilation is not None
+        and not isinstance(compilation, bool)
+        and not (isinstance(compilation, str) and compilation == "auto")
+    ):
         raise ConfigurationError("compile must be True, False, 'auto', or None.")
     model, placements, aliases = _model_info(getattr(run, "algorithm_input", None))
     gpu_ids = set(placements.values())
@@ -298,9 +338,20 @@ def plan_run(run: Any, *, on: Any = None, parallel: Any = "auto", example: Any =
     else:
         validation = "partially_validated" if checks or inventory_notes else "validated"
     return Plan(
-        device=device, precision=precision, target="remote" if remote else "local",
-        strategy="single", validation_state=validation, inventory=tuple(inventory),
-        placements=placements, aliases=aliases, model=model, data=_data_info(getattr(run, "data", None)),
-        optimizer=_metadata(optimizer), schedule=_metadata(config.get("schedule")),
-        execution=execution, decisions=tuple(decisions), limitations=tuple(limitations), runtime_checks=tuple(checks),
+        device=device,
+        precision=precision,
+        target="remote" if remote else "local",
+        strategy="single",
+        validation_state=validation,
+        inventory=tuple(inventory),
+        placements=placements,
+        aliases=aliases,
+        model=model,
+        data=_data_info(getattr(run, "data", None)),
+        optimizer=_metadata(optimizer),
+        schedule=_metadata(config.get("schedule")),
+        execution=execution,
+        decisions=tuple(decisions),
+        limitations=tuple(limitations),
+        runtime_checks=tuple(checks),
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass, replace
 from threading import Lock
@@ -16,6 +16,18 @@ import torch
 from mlzo.errors import ConfigurationError, TrainingError, UnsupportedFeatureError
 
 _EXECUTION_LOCK = Lock()
+
+
+@contextmanager
+def _evaluating(model: torch.nn.Module) -> Iterator[None]:
+    modes = [(module, module.training) for module in model.modules()]
+    try:
+        model.eval()
+        yield
+    finally:
+        # Recursive train(mode) would overwrite intentionally different child modes.
+        for module, mode in modes:
+            module.training = mode
 
 
 @contextmanager

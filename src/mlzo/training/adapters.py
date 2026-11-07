@@ -34,8 +34,14 @@ def builtin_loss(prediction: torch.Tensor, target: torch.Tensor, loss: Any) -> S
                 denominator = float(_sum(weight[target[valid]].detach()).item())
         if denominator == 0 and reduction in {"mean", "sum"}:
             return Step(loss=prediction.reshape(-1)[:0].sum(), weight=0.0)
-        numerator = F.cross_entropy(prediction, target, weight=weight, ignore_index=ignore_index,
-                                    reduction="sum", label_smoothing=smoothing)
+        numerator = F.cross_entropy(
+            prediction,
+            target,
+            weight=weight,
+            ignore_index=ignore_index,
+            reduction="sum",
+            label_smoothing=smoothing,
+        )
     elif isinstance(loss, nn.MSELoss) or (isinstance(loss, str) and loss == "mse"):
         raw = F.mse_loss(prediction, target, reduction="none")
         numerator, denominator = _sum(raw), float(raw.numel())
@@ -43,11 +49,21 @@ def builtin_loss(prediction: torch.Tensor, target: torch.Tensor, loss: Any) -> S
         raw = F.l1_loss(prediction, target, reduction="none")
         numerator, denominator = _sum(raw), float(raw.numel())
     elif isinstance(loss, nn.BCELoss) or (isinstance(loss, str) and loss == "bce"):
-        raw = F.binary_cross_entropy(prediction, target, weight=getattr(loss, "weight", None), reduction="none")
+        raw = F.binary_cross_entropy(
+            prediction,
+            target,
+            weight=getattr(loss, "weight", None),
+            reduction="none",
+        )
         numerator, denominator = _sum(raw), float(raw.numel())
     elif isinstance(loss, nn.BCEWithLogitsLoss) or (isinstance(loss, str) and loss in {"bce_with_logits", "bce_logits"}):
-        raw = F.binary_cross_entropy_with_logits(prediction, target, weight=getattr(loss, "weight", None),
-                                                  pos_weight=getattr(loss, "pos_weight", None), reduction="none")
+        raw = F.binary_cross_entropy_with_logits(
+            prediction,
+            target,
+            weight=getattr(loss, "weight", None),
+            pos_weight=getattr(loss, "pos_weight", None),
+            reduction="none",
+        )
         numerator, denominator = _sum(raw), float(raw.numel())
     else:
         return None

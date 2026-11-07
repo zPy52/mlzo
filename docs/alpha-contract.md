@@ -24,6 +24,6 @@ The orchestrator owns common errors, version, final integration, and smoke check
 
 ## Validation and limits
 
-The user explicitly requests only basic compilation, imports, packaging, and tiny smoke checks. Do not build a test suite, CI pipeline, benchmark system, or numerical validation matrix. Each implementer compiles its files and may run one small smoke command. Use `.venv/bin/python`; the system `python3` is 3.6. Do not modify the shared environment concurrently or install dependencies independently. The orchestrator installs dependencies.
+Initial alpha validation used compilation, imports, packaging, and tiny smoke checks. The subsequent readability review adds focused CPU regression checks to preserve the implemented contracts in `plan.md`. Run them with `.venv/bin/python -m unittest discover -s tests -v`; see `docs/readability-follow-up.md` for the checks and their limits. This is not a full CI, GPU, or numerical validation matrix. Use `.venv/bin/python` for repository checks. Do not modify the shared environment concurrently or install dependencies independently.
 
 Use documented PyTorch APIs, retain original forward semantics, and report alpha limits honestly. Basic import must not initialize CUDA, contact a service, or require optional dependencies. The package build must not import torch. License selection and publication belong to the owner; do not invent a license or publish to PyPI.

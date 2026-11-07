@@ -68,9 +68,7 @@ def describe_source(value: Any) -> Source:
         if is_s3(path):
             validate_s3_file(path)
         return Source("path", path)
-    if isinstance(value, DataLoader):
-        return Source("native", value)
-    if isinstance(value, Dataset):
+    if isinstance(value, (DataLoader, Dataset)):
         return Source("native", value)
     if callable(value):
         try:

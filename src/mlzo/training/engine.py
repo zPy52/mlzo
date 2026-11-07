@@ -21,9 +21,9 @@ from mlzo.planning import plan_run
 
 from .adapters import DeclarativeTraining, FunctionalTraining
 from .optim import bind_optimizers
-from .runtime import move_batch, normalization_weight, restricted_copy, restore_rng, rng_state, seed_process
+from .runtime import _evaluating, move_batch, normalization_weight, restricted_copy, restore_rng, rng_state, seed_process
 from .schedules import Schedule
-from .types import History, Step, Training, detached_metrics
+from .types import History, Step, Training, _EngineCounters, _EngineSnapshot, detached_metrics
 
 
 def _length(value: Any) -> int | None:
@@ -75,9 +75,10 @@ class Engine:
         value = run.algorithm_input
         if isinstance(value, Training):
             algorithm = value
+        elif isinstance(value, nn.Module) and self.config.get("step") is not None:
+            algorithm = FunctionalTraining(value, self.config["step"])
         elif isinstance(value, nn.Module):
-            algorithm = (FunctionalTraining(value, self.config["step"]) if self.config.get("step") is not None
-                         else DeclarativeTraining(value, self.config["loss"]))
+            algorithm = DeclarativeTraining(value, self.config["loss"])
         else:
             algorithm = value()
             if not isinstance(algorithm, Training):
@@ -121,10 +122,15 @@ class Engine:
         if callback is not None:
             callback({"type": kind, "run_id": self.run.id, "counters": self.counters(), **payload})
 
-    def counters(self) -> dict[str, Any]:
-        return {"iteration": self.iteration, "epoch": self.epoch, "batch_in_epoch": self.batch_in_epoch,
-                "optimizer_steps": dict(self.optimizer_steps), "skipped_updates": dict(self.skipped_updates),
-                "update_events": self.update_events}
+    def counters(self) -> _EngineCounters:
+        return {
+            "iteration": self.iteration,
+            "epoch": self.epoch,
+            "batch_in_epoch": self.batch_in_epoch,
+            "optimizer_steps": dict(self.optimizer_steps),
+            "skipped_updates": dict(self.skipped_updates),
+            "update_events": self.update_events,
+        }
 
     def _make_scaler(self) -> Any:
         if self.precision != "fp16":
@@ -327,6 +333,11 @@ class Engine:
         self._iterator = None
 
     def fit(self, *, epochs: int | None, steps: int | None, resume: Any = None) -> History:
+        """Own the fit thread, epoch/budget orchestration, resume and cleanup.
+
+        Flush pending gradients before terminal events. Failure discards them
+        and requires checkpoint recovery without undoing completed updates.
+        """
         if self._in_fit:
             raise TrainingError("This engine is already running.")
         self._in_fit = True
@@ -364,40 +375,12 @@ class Engine:
                 try:
                     batch = next(self._iterator)
                 except StopIteration:
-                    if self.batch_in_epoch == 0:
-                        if steps is not None:
-                            raise TrainingError("Data source is empty or exhausted before the total steps target; use a reusable source or factory.")
-                        self._end_epoch()
-                    else:
-                        self._end_epoch()
+                    if self.batch_in_epoch == 0 and steps is not None:
+                        raise TrainingError("Data source is empty or exhausted before the total steps target; use a reusable source or factory.")
+                    self._end_epoch()
                     self._maybe_checkpoint()
                     continue
-                batch = move_batch(batch, self.device)
-                self._explicit_calls = 0
-                self._in_step = True
-                try:
-                    with self._autocast():
-                        value = self.algorithm.step(batch)
-                finally:
-                    self._in_step = False
-                if self._explicit_calls and (isinstance(value, torch.Tensor) or (isinstance(value, Step) and value.loss is not None)):
-                    raise TrainingError(
-                        "step() called Training.update() and also returned an automatic loss. "
-                        "Already-completed explicit updates cannot be rolled back; recover from a committed checkpoint."
-                    )
-                result, weight, metrics = self._result(value, training=True)
-                if result.loss is not None:
-                    self._contribute(result.loss, weight)
-                self.iteration += 1
-                self.batch_in_epoch += 1
-                stop = result.stop is True
-                if self._epoch_length is not None and self.batch_in_epoch >= self._epoch_length:
-                    self._end_epoch()
-                if stop:
-                    self._flush()
-                self.history.append(metrics, counters=self.counters())
-                self._emit("iteration", metrics=metrics)
-                self._maybe_checkpoint()
+                stop = self._run_iteration(batch)
             self._flush()
             self._maybe_checkpoint()
             self.history.state = "cancelled" if self._cancel_requested else "completed"
@@ -421,6 +404,40 @@ class Engine:
             self._fit_thread = None
             self.history.notes = list(self.notes)
 
+    def _run_iteration(self, batch: Any) -> bool:
+        """Execute one fetched batch on the fit thread; return whole-run stop.
+
+        Validate before automatic contribution, then advance counters and flush
+        epoch/stop boundaries before history, event emission and checkpointing.
+        """
+        batch = move_batch(batch, self.device)
+        self._explicit_calls = 0
+        self._in_step = True
+        try:
+            with self._autocast():
+                value = self.algorithm.step(batch)
+        finally:
+            self._in_step = False
+        if self._explicit_calls and (isinstance(value, torch.Tensor) or (isinstance(value, Step) and value.loss is not None)):
+            raise TrainingError(
+                "step() called Training.update() and also returned an automatic loss. "
+                "Already-completed explicit updates cannot be rolled back; recover from a committed checkpoint."
+            )
+        result, weight, metrics = self._result(value, training=True)
+        if result.loss is not None:
+            self._contribute(result.loss, weight)
+        self.iteration += 1
+        self.batch_in_epoch += 1
+        stop = result.stop is True
+        if self._epoch_length is not None and self.batch_in_epoch >= self._epoch_length:
+            self._end_epoch()
+        if stop:
+            self._flush()
+        self.history.append(metrics, counters=self.counters())
+        self._emit("iteration", metrics=metrics)
+        self._maybe_checkpoint()
+        return stop
+
     def evaluate(self, data: Any, *, step: Any = None) -> dict[str, float]:
         if self._in_fit:
             raise TrainingError("Evaluation during fit() is unsupported.")
@@ -438,16 +455,17 @@ class Engine:
             data = DatasetIterable(data)
         if _length(data) is None:
             raise ConfigurationError("Evaluation requires finite data with a length in this alpha.")
-        modes = [(module, module.training) for module in self.algorithm.model.modules()]
         totals: dict[str, float] = {}
         weights: dict[str, float] = {}
-        try:
-            self.algorithm.model.eval()
+        with _evaluating(self.algorithm.model):
             with torch.no_grad():
                 for batch in data:
                     with self._autocast():
-                        value = (step(self.algorithm.model, move_batch(batch, self.device)) if step is not None
-                                 else self.algorithm.evaluate(move_batch(batch, self.device)))
+                        batch = move_batch(batch, self.device)
+                        if step is not None:
+                            value = step(self.algorithm.model, batch)
+                        else:
+                            value = self.algorithm.evaluate(batch)
                     result, weight, metrics = self._result(value, training=False)
                     for name, value in metrics.items():
                         contribution = weight if name == "loss" and result.loss is not None else 1.0
@@ -456,14 +474,14 @@ class Engine:
                             weights[name] = weights.get(name, 0.0) + contribution
                     if result.stop is True:
                         break
-        finally:
-            # Assign each flag directly; recursive train(mode) would overwrite
-            # intentionally frozen children when their parent is restored.
-            for module, mode in modes:
-                module.training = mode
         return {name: total / weights[name] for name, total in totals.items()}
 
-    def _safe(self, *, restoring: bool = False) -> None:
+    def _validate_checkpoint_boundary(self, *, restoring: bool = False) -> None:
+        """Require no active step or pending accumulated gradients.
+
+        During fit(), only its owning thread may snapshot or restore. A failed
+        iteration allows restore for recovery but cannot produce a snapshot.
+        """
         if self._in_fit and get_ident() != self._fit_thread:
             raise UnsupportedFeatureError("Concurrent engine snapshots are unsupported; request a policy checkpoint at a safe boundary.")
         if self._in_step or self._pending_count:
@@ -471,24 +489,37 @@ class Engine:
         if self._failed_boundary and not restoring:
             raise TrainingError("A failed iteration cannot be checkpointed; resume the last committed checkpoint or create a new run.")
 
-    def state_dict(self) -> dict[str, Any]:
-        self._safe()
+    def state_dict(self) -> _EngineSnapshot:
+        self._validate_checkpoint_boundary()
         if not self.schedulers:
             self._configure_schedules(None)
-        return restricted_copy({
+        snapshot: _EngineSnapshot = {
             "schema_version": 1,
             "model": self.model.state_dict(),
             "optimizers": {name: value.state_dict() for name, value in self.optimizers.items()},
             "schedulers": {name: value.state_dict() for name, value in self.schedulers.items()},
-            "scalers": {name: value.state_dict() if value is not None else None for name, value in self.scalers.items()},
-            "counters": self.counters(), "rng": rng_state(self.device), "algorithm_state": self.algorithm.state,
+            "scalers": {
+                name: value.state_dict() if value is not None else None
+                for name, value in self.scalers.items()
+            },
+            "counters": self.counters(),
+            "rng": rng_state(self.device),
+            "algorithm_state": self.algorithm.state,
             "optimizer_parameters": {name: self._parameter_names(name) for name in self.optimizers},
-            "optimizer_types": {name: f"{type(value).__module__}.{type(value).__qualname__}" for name, value in self.optimizers.items()},
+            "optimizer_types": {
+                name: f"{type(value).__module__}.{type(value).__qualname__}"
+                for name, value in self.optimizers.items()
+            },
             "precision": self.precision,
-            "data_resume": {"guarantee": "epoch_restart" if self._data_restartable else "unavailable_one_shot", "epoch": self.epoch, "batch_in_epoch": self.batch_in_epoch,
-                            "description": "Model/update state is restored. A partial data epoch restarts; native sampler/worker state is not serialized."},
+            "data_resume": {
+                "guarantee": "epoch_restart" if self._data_restartable else "unavailable_one_shot",
+                "epoch": self.epoch,
+                "batch_in_epoch": self.batch_in_epoch,
+                "description": "Model/update state is restored. A partial data epoch restarts; native sampler/worker state is not serialized.",
+            },
             "last_checkpoint_event": self._last_checkpoint_event,
-        })
+        }
+        return restricted_copy(snapshot)
 
     def _parameter_names(self, name: str) -> list[list[str]]:
         names = {id(parameter): path for path, parameter in self.model.named_parameters()}
@@ -501,7 +532,14 @@ class Engine:
             self.schedulers[name].load_state_dict(value)
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        self._safe(restoring=True)
+        """Restore compatible state at an owned boundary with no pending gradients.
+
+        Require matching optimizer ownership, precision and scheduler state;
+        progressed one-shot snapshots cannot resume. Model/optimizer mutation
+        precedes some validation, and failures do not roll back. Restore counters
+        and algorithm state before RNG, then clear gradients and the failure flag.
+        """
+        self._validate_checkpoint_boundary(restoring=True)
         if state.get("schema_version") != 1:
             raise ConfigurationError("Unsupported training snapshot schema.")
         if set(state["optimizers"]) != set(self.optimizers):
@@ -545,7 +583,7 @@ class Engine:
         self._failed_boundary = False
 
     def checkpoint(self, *, to: Any = None) -> Any:
-        self._safe()
+        self._validate_checkpoint_boundary()
         from mlzo.checkpoint import save_snapshot
         policy = self.config.get("checkpoint")
         destination = to if to is not None else getattr(policy, "to", None)
@@ -553,9 +591,16 @@ class Engine:
             raise ConfigurationError("checkpoint() requires to= or a configured checkpoint policy.")
         if policy is not None and getattr(policy, "mode", "full") != "full":
             raise UnsupportedFeatureError("Training checkpoints use mode='full'; use run.export() for weights-only inference artifacts.")
-        reference = save_snapshot(self.state_dict(), to=destination, run_id=self.run.id,
-                                  metadata={"counters": self.counters(), "resume_guarantee": "epoch_restart" if self._data_restartable else "unavailable_one_shot"},
-                                  keep_last=getattr(policy, "keep_last", None))
+        reference = save_snapshot(
+            self.state_dict(),
+            to=destination,
+            run_id=self.run.id,
+            metadata={
+                "counters": self.counters(),
+                "resume_guarantee": "epoch_restart" if self._data_restartable else "unavailable_one_shot",
+            },
+            keep_last=getattr(policy, "keep_last", None),
+        )
         self._emit("checkpoint", reference=reference.to_dict() if hasattr(reference, "to_dict") else str(reference))
         return reference
 

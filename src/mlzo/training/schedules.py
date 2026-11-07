@@ -82,48 +82,64 @@ class Schedule:
         self.inferred_horizon = False
         self.call_arity = 2
         if isinstance(self.source, ScheduleSpec):
-            if self.source.total_steps is not None:
-                self.horizon = self.source.total_steps
-            elif self.source.kind in {"linear", "cosine"}:
-                self.inferred_horizon = True
-                if horizon is None:
-                    raise ConfigurationError("Linear/cosine schedules require a known automatic-update horizon or explicit total_steps.")
-            if self.source.kind in {"linear", "cosine"} and self.horizon is not None and self.source.warmup > self.horizon:
-                raise ConfigurationError("Decay schedule warmup cannot exceed total_steps.")
+            self._resolve_builtin_horizon(self.source)
         elif source is not None:
-            native_type = getattr(torch.optim.lr_scheduler, "LRScheduler", torch.optim.lr_scheduler._LRScheduler)
-            if isinstance(source, (native_type, torch.optim.lr_scheduler._LRScheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)):
-                self.native = source
-            elif callable(source):
-                try:
-                    parameters = list(inspect.signature(source).parameters.values())
-                except (TypeError, ValueError) as exc:
-                    raise ConfigurationError("Schedule callables need an inspectable signature.") from exc
-                if parameters and parameters[0].name in {"optimizer", "opt"}:
-                    self.native = source(optimizer)
-                else:
-                    self.inferred_horizon = True
-                    if horizon is None:
-                        raise ConfigurationError("Callable multipliers require a known automatic-update horizon.")
-                    try:
-                        inspect.signature(source).bind(1, horizon)
-                    except TypeError:
-                        try:
-                            inspect.signature(source).bind(1)
-                            self.call_arity = 1
-                        except TypeError as exc:
-                            raise ConfigurationError("Schedule must accept (upcoming_update, horizon), or be a factory(optimizer).") from exc
-            else:
-                raise ConfigurationError("schedule requires a schedule spec, multiplier callable, or native scheduler factory.")
+            self._resolve_custom_source(source)
         if self.native is not None:
-            if isinstance(self.native, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                raise UnsupportedFeatureError("Metric-driven schedulers require an explicit policy and are unsupported in this alpha.")
-            if getattr(self.native, "optimizer", None) is not optimizer:
-                raise ConfigurationError("A native scheduler must reference its bound optimizer.")
-            if not callable(getattr(self.native, "step", None)) or not callable(getattr(self.native, "state_dict", None)):
-                raise ConfigurationError("A scheduler factory must return a PyTorch scheduler.")
+            self._validate_native()
         else:
             self._apply_next()
+
+    def _resolve_builtin_horizon(self, source: ScheduleSpec) -> None:
+        if source.total_steps is not None:
+            self.horizon = source.total_steps
+        elif source.kind in {"linear", "cosine"}:
+            self.inferred_horizon = True
+            if self.horizon is None:
+                raise ConfigurationError("Linear/cosine schedules require a known automatic-update horizon or explicit total_steps.")
+        if (source.kind in {"linear", "cosine"}
+                and self.horizon is not None and source.warmup > self.horizon):
+            raise ConfigurationError("Decay schedule warmup cannot exceed total_steps.")
+
+    def _resolve_custom_source(self, source: Any) -> None:
+        schedulers = torch.optim.lr_scheduler
+        native_type = getattr(schedulers, "LRScheduler", schedulers._LRScheduler)
+        if isinstance(source, (native_type, schedulers._LRScheduler, schedulers.ReduceLROnPlateau)):
+            self.native = source
+            return
+        if not callable(source):
+            raise ConfigurationError("schedule requires a schedule spec, multiplier callable, or native scheduler factory.")
+        try:
+            signature = inspect.signature(source)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError("Schedule callables need an inspectable signature.") from exc
+        first_parameter = next(iter(signature.parameters), None)
+        if first_parameter in {"optimizer", "opt"}:
+            self.native = source(self.optimizer)
+        else:
+            self._configure_multiplier(signature)
+
+    def _configure_multiplier(self, signature: inspect.Signature) -> None:
+        self.inferred_horizon = True
+        if self.horizon is None:
+            raise ConfigurationError("Callable multipliers require a known automatic-update horizon.")
+        try:
+            signature.bind(1, self.horizon)
+        except TypeError:
+            try:
+                signature.bind(1)
+                self.call_arity = 1
+            except TypeError as exc:
+                raise ConfigurationError("Schedule must accept (upcoming_update, horizon), or be a factory(optimizer).") from exc
+
+    def _validate_native(self) -> None:
+        if isinstance(self.native, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            raise UnsupportedFeatureError("Metric-driven schedulers require an explicit policy and are unsupported in this alpha.")
+        if getattr(self.native, "optimizer", None) is not self.optimizer:
+            raise ConfigurationError("A native scheduler must reference its bound optimizer.")
+        if (not callable(getattr(self.native, "step", None))
+                or not callable(getattr(self.native, "state_dict", None))):
+            raise ConfigurationError("A scheduler factory must return a PyTorch scheduler.")
 
     def validate_horizon(self, horizon: int | None) -> None:
         if self.inferred_horizon and horizon != self.horizon:
@@ -164,11 +180,15 @@ class Schedule:
             self._apply_next()
 
     def state_dict(self) -> dict[str, Any]:
-        return {"base_lrs": list(self.base_lrs), "successful": self.successful,
-                "horizon": self.horizon, "inferred_horizon": self.inferred_horizon,
-                "definition": self._definition(),
-                "current_lrs": [float(group["lr"]) for group in self.optimizer.param_groups],
-                "native": self.native.state_dict() if self.native is not None else None}
+        return {
+            "base_lrs": list(self.base_lrs),
+            "successful": self.successful,
+            "horizon": self.horizon,
+            "inferred_horizon": self.inferred_horizon,
+            "definition": self._definition(),
+            "current_lrs": [float(group["lr"]) for group in self.optimizer.param_groups],
+            "native": self.native.state_dict() if self.native is not None else None,
+        }
 
     def _definition(self) -> Any:
         if isinstance(self.source, ScheduleSpec):
@@ -176,15 +196,18 @@ class Schedule:
         if self.source is None:
             return None
         source = self.source
-        return {"module": getattr(source, "__module__", type(source).__module__),
-                "qualname": getattr(source, "__qualname__", type(source).__qualname__),
-                "native": type(self.native).__qualname__ if self.native is not None else None}
+        return {
+            "module": getattr(source, "__module__", type(source).__module__),
+            "qualname": getattr(source, "__qualname__", type(source).__qualname__),
+            "native": type(self.native).__qualname__ if self.native is not None else None,
+        }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         fixed = isinstance(self.source, ScheduleSpec) and self.source.total_steps is not None
         if state["definition"] != self._definition():
             raise ConfigurationError("Checkpoint schedule definition differs from this run.")
-        if bool(state["inferred_horizon"]) != self.inferred_horizon or ((self.inferred_horizon or fixed) and state["horizon"] != self.horizon):
+        if (bool(state["inferred_horizon"]) != self.inferred_horizon
+                or ((self.inferred_horizon or fixed) and state["horizon"] != self.horizon)):
             raise ConfigurationError("Checkpoint schedule horizon differs from this run; preserve the original schedule and budget.")
         if len(state["base_lrs"]) != len(self.optimizer.param_groups):
             raise ConfigurationError("Checkpoint scheduler parameter groups differ from this run.")

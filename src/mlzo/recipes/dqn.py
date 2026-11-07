@@ -7,7 +7,6 @@ import inspect
 import math
 import random
 from collections.abc import Mapping
-from contextlib import contextmanager
 from numbers import Integral, Real
 from typing import Any
 
@@ -17,6 +16,7 @@ from torch.nn import functional as F
 
 from mlzo.errors import ConfigurationError, TrainingError, UnsupportedFeatureError
 from mlzo.training import Step, Training
+from mlzo.training.runtime import _evaluating
 
 __all__ = ["DQNTraining", "dqn"]
 
@@ -31,18 +31,6 @@ def _probability(name: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or not 0 <= value <= 1:
         raise ConfigurationError(f"DQN {name} must be finite and between zero and one.")
     return float(value)
-
-
-@contextmanager
-def _evaluating(model: nn.Module):
-    modes = [(module, module.training) for module in model.modules()]
-    try:
-        model.eval()
-        yield
-    finally:
-        # Recursive train(mode) would overwrite intentionally different child modes.
-        for module, mode in modes:
-            module.training = mode
 
 
 def _flag(value: Any, name: str) -> bool:
@@ -193,15 +181,17 @@ class DQNTraining(Training[None]):
         if hasattr(env, "num_envs"):
             raise UnsupportedFeatureError("DQN supports a single environment; vector environments are unsupported.")
         space = getattr(env, "action_space", None)
-        n = getattr(space, "n", None)
-        if isinstance(n, bool) or not isinstance(n, Integral) or n < 1 or getattr(space, "shape", ()) != ():
+        action_count = getattr(space, "n", None)
+        if (isinstance(action_count, bool) or not isinstance(action_count, Integral)
+                or action_count < 1 or getattr(space, "shape", ()) != ()):
             raise UnsupportedFeatureError("DQN requires a scalar Discrete action space with a positive integer .n.")
-        start = getattr(space, "start", 0)
-        if isinstance(start, bool) or not isinstance(start, Integral):
+        action_start = getattr(space, "start", 0)
+        if isinstance(action_start, bool) or not isinstance(action_start, Integral):
             raise UnsupportedFeatureError("DQN Discrete action_space.start must be an integer.")
-        if self.state["actions"] is not None and (self.state["actions"], self.state["action_start"]) != (int(n), int(start)):
+        if (self.state["actions"] is not None
+                and (self.state["actions"], self.state["action_start"]) != (int(action_count), int(action_start))):
             raise ConfigurationError("DQN action space differs from the restored state.")
-        self.state["actions"], self.state["action_start"] = int(n), int(start)
+        self.state["actions"], self.state["action_start"] = int(action_count), int(action_start)
         observation_space = getattr(env, "observation_space", None)
         if observation_space is not None:
             shape = getattr(observation_space, "shape", None)
@@ -236,7 +226,8 @@ class DQNTraining(Training[None]):
             raise ConfigurationError("DQN checkpoint counters differ from the engine's default optimizer counters.")
         # Engine.load_state_dict replaces algorithm.state. Discard all derived
         # runtime objects rather than carrying a stale target or episode forward.
-        previous_env, self._env = self._env, None
+        previous_env = self._env
+        self._env = None
         self._target = self._rng = self._observation = None
         self._active_state = None
         if previous_env is not None and not self._live_env:
@@ -254,7 +245,10 @@ class DQNTraining(Training[None]):
                                 for obs, action, reward, nxt, terminated in self.state["replay"]]
         if len(self.state["replay"]) > self._config["replay"]:
             raise ConfigurationError("DQN checkpoint replay exceeds its configured capacity.")
-        self._rng = random.Random(self._config["seed"] if self._config["seed"] is not None else random.getrandbits(64))
+        seed = self._config["seed"]
+        if seed is None:
+            seed = random.getrandbits(64)
+        self._rng = random.Random(seed)
         if self.state["rng"] is not None:
             self._rng.setstate(self.state["rng"])
         self._open_env()
@@ -399,7 +393,12 @@ class DQNTraining(Training[None]):
         if self._closed:
             return
         self._closed = True
-        env = self._env if self._env is not None else self._env_spec if self._live_env else None
+        if self._env is not None:
+            env = self._env
+        elif self._live_env:
+            env = self._env_spec
+        else:
+            env = None
         self._env = self._target = self._rng = self._observation = self._active_state = None
         close = getattr(env, "close", None)
         if callable(close):

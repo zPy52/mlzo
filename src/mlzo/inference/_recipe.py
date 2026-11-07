@@ -12,7 +12,12 @@ from mlzo.model import FactoryRef
 MAX_DEPTH = 64
 
 
-def _value(value: Any, *, encode: bool, depth: int = 0, active: set[int] | None = None) -> Any:
+def _convert_argument_value(value: Any, *, encode: bool, depth: int = 0, active: set[int] | None = None) -> Any:
+    """Convert constructor arguments to tagged JSON with encode=True, or back.
+
+    Encoding accepts primitives, lists, tuples and string-keyed dictionaries.
+    Decoding expects their tagged JSON representation.
+    """
     if depth > MAX_DEPTH:
         raise ConfigurationError(f"Inference recipe nesting exceeds {MAX_DEPTH} levels.")
     if value is None or type(value) in (bool, int, str):
@@ -21,33 +26,43 @@ def _value(value: Any, *, encode: bool, depth: int = 0, active: set[int] | None 
         return value
     if active is None:
         active = set()
-    if id(value) in active:
+    object_id = id(value)
+    if object_id in active:
         raise ConfigurationError("Cyclic inference recipe arguments are unsupported.")
-    active.add(id(value))
+    active.add(object_id)
     try:
-        def visit(child: Any) -> Any:
-            return _value(child, encode=encode, depth=depth + 1, active=active)
+        def convert_child(child: Any) -> Any:
+            return _convert_argument_value(child, encode=encode, depth=depth + 1, active=active)
 
         if type(value) is list:
-            return [visit(child) for child in value]
+            return [convert_child(child) for child in value]
         if encode:
             if type(value) is tuple:
-                return {"type": "tuple", "items": [visit(child) for child in value]}
+                return {"type": "tuple", "items": [convert_child(child) for child in value]}
             if type(value) is dict and all(type(key) is str for key in value):
                 # Tag dictionaries too, so user keys cannot collide with tuple tags.
-                return {"type": "dict", "items": [[key, visit(child)] for key, child in value.items()]}
-        elif type(value) is dict and set(value) == {"type", "items"} and type(value["items"]) is list:
+                return {"type": "dict", "items": [[key, convert_child(child)] for key, child in value.items()]}
+        elif (
+            type(value) is dict
+            and set(value) == {"type", "items"}
+            and type(value["items"]) is list
+        ):
             if value["type"] == "tuple":
-                return tuple(visit(child) for child in value["items"])
+                return tuple(convert_child(child) for child in value["items"])
             if value["type"] == "dict":
                 result: dict[str, Any] = {}
                 for entry in value["items"]:
-                    if type(entry) is not list or len(entry) != 2 or type(entry[0]) is not str or entry[0] in result:
+                    if (
+                        type(entry) is not list
+                        or len(entry) != 2
+                        or type(entry[0]) is not str
+                        or entry[0] in result
+                    ):
                         raise ConfigurationError("Invalid dictionary entries in an inference recipe.")
-                    result[entry[0]] = visit(entry[1])
+                    result[entry[0]] = convert_child(entry[1])
                 return result
     finally:
-        active.remove(id(value))
+        active.remove(object_id)
     raise ConfigurationError(
         "Inference recipes support only None, bool, int, finite float, str, lists, "
         "tuples, and dictionaries with string keys. Convert devices, dtypes, tensors, "
@@ -71,8 +86,8 @@ def encode_recipe(recipe: Any) -> dict[str, Any]:
         ) from exc
     return {
         "factory": reference.to_dict(),
-        "args": _value(tuple(recipe["args"]), encode=True),
-        "kwargs": _value(recipe["kwargs"], encode=True),
+        "args": _convert_argument_value(tuple(recipe["args"]), encode=True),
+        "kwargs": _convert_argument_value(recipe["kwargs"], encode=True),
     }
 
 
@@ -90,8 +105,8 @@ def decode_arguments(recipe: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
         or any(not part.isidentifier() for part in reference["qualname"].split("."))
     ):
         raise ConfigurationError("Invalid importable factory reference in the inference manifest.")
-    args = _value(recipe["args"], encode=False)
-    kwargs = _value(recipe["kwargs"], encode=False)
+    args = _convert_argument_value(recipe["args"], encode=False)
+    kwargs = _convert_argument_value(recipe["kwargs"], encode=False)
     if type(args) is not tuple or type(kwargs) is not dict:
         raise ConfigurationError("An inference recipe must decode to tuple args and dictionary kwargs.")
     return args, kwargs

@@ -111,14 +111,15 @@ def collect_data_paths(run: Run) -> tuple[Path, ...]:
         if type(value) is DataPipeline:
             found.update(_absolute(path) for path in value.local_paths())
         elif isinstance(value, (Mapping, tuple, list)):
-            if id(value) in active:
+            object_id = id(value)
+            if object_id in active:
                 raise _error("run.data", "Cyclic data descriptors cannot be transported.")
-            active.add(id(value))
+            active.add(object_id)
             try:
                 for item in value.values() if isinstance(value, Mapping) else value:
                     visit(item, depth + 1)
             finally:
-                active.remove(id(value))
+                active.remove(object_id)
 
     if isinstance(run.data, (str, PurePath)):
         if not str(run.data).startswith("s3://"):
@@ -135,7 +136,7 @@ class _Encoder:
         self.lazy_ids: dict[int, str] = {}
         self.nodes = 0
 
-    def encode(self, value: Any, path: str, depth: int = 0) -> Any:
+    def encode_value(self, value: Any, path: str, depth: int = 0) -> Any:
         self.nodes += 1
         if depth > _MAX_DEPTH or self.nodes > _MAX_NODES:
             raise _error(path, "Recipe exceeds the transport nesting or item limit.")
@@ -145,35 +146,45 @@ class _Encoder:
             if not math.isfinite(value):
                 raise _error(path, "Only finite floats are JSON transportable.")
             return value
-        if id(value) in self.active:
+        object_id = id(value)
+        # An active Lazy is a cycle even though it already has a recipe ID.
+        if object_id in self.active:
             raise _error(path, "Cyclic recipes cannot be transported; put construction in an importable factory.")
-        if type(value) is Lazy and id(value) in self.lazy_ids:
-            return {_TAG: "lazy_ref", "id": self.lazy_ids[id(value)]}
-        self.active.add(id(value))
+        if type(value) is Lazy and object_id in self.lazy_ids:
+            return {_TAG: "lazy_ref", "id": self.lazy_ids[object_id]}
+        self.active.add(object_id)
         try:
-            return self._encode(value, path, depth)
+            return self._encode_recipe_value(value, path, depth)
         except ConfigurationError as exc:
-            if str(exc).startswith(f"{path}:") or str(exc).startswith(f"{path}[") or str(exc).startswith(f"{path}."):
+            if (
+                str(exc).startswith(f"{path}:")
+                or str(exc).startswith(f"{path}[")
+                or str(exc).startswith(f"{path}.")
+            ):
                 raise
             raise _error(path, str(exc)) from exc
         finally:
-            self.active.remove(id(value))
+            self.active.remove(object_id)
 
-    def _encode(self, value: Any, path: str, depth: int) -> Any:
-        def enc(item: Any, suffix: str) -> Any:
-            return self.encode(item, path + suffix, depth + 1)
+    def _encode_recipe_value(self, value: Any, path: str, depth: int) -> Any:
+        def encode_child(item: Any, suffix: str) -> Any:
+            return self.encode_value(item, path + suffix, depth + 1)
 
         if type(value) is Lazy:
             if value.state != "unmaterialized":
                 raise _error(path, f"Lazy is {value.state!r}; remote submission requires a fresh unmaterialized recipe. {_GUIDANCE}")
             if value._modules or value._parameters or value._buffers:
                 raise _error(path, f"Lazy has registered model state outside its constructor recipe. {_GUIDANCE}")
-            identity = f"l{len(self.lazy_ids)}"
-            self.lazy_ids[id(value)] = identity
+            recipe_id = f"l{len(self.lazy_ids)}"
+            self.lazy_ids[id(value)] = recipe_id
             return {
-                _TAG: "lazy", "id": identity, "factory": enc(value.factory, ".factory"),
-                "args": enc(value.args, ".args"), "kwargs": enc(value.kwargs, ".kwargs"),
-                "gpu": value.__dict__.get("_mlzo_gpu"), "training": value.training,
+                _TAG: "lazy",
+                "id": recipe_id,
+                "factory": encode_child(value.factory, ".factory"),
+                "args": encode_child(value.args, ".args"),
+                "kwargs": encode_child(value.kwargs, ".kwargs"),
+                "gpu": value.__dict__.get("_mlzo_gpu"),
+                "training": value.training,
             }
         if isinstance(value, nn.Module):
             raise _error(path, f"Eager model instances cannot be serialized. {_GUIDANCE}")
@@ -188,14 +199,18 @@ class _Encoder:
                 value = value.rewrite_local_paths(lambda local: _remap(local, self.mapping, path + ".source.value"))
             # The identity callback keeps exact option paths in encoder errors.
             # to_spec only describes configuration; it never builds the source.
-            return {_TAG: "data_pipeline", "spec": enc(value.to_spec(lambda item: item), ".spec")}
+            return {_TAG: "data_pipeline", "spec": encode_child(value.to_spec(lambda item: item), ".spec")}
         if type(value) is OptimizerSpec:
-            return {_TAG: "optimizer", "name": enc(value.name, ".name"),
-                    "params": enc(value.params, ".params"), "kwargs": enc(value.kwargs, ".kwargs")}
+            return {
+                _TAG: "optimizer",
+                "name": encode_child(value.name, ".name"),
+                "params": encode_child(value.params, ".params"),
+                "kwargs": encode_child(value.kwargs, ".kwargs"),
+            }
         if type(value) is ScheduleSpec:
-            return {_TAG: "schedule", "spec": enc(value.to_dict(), ".spec")}
+            return {_TAG: "schedule", "spec": encode_child(value.to_dict(), ".spec")}
         if type(value) is CheckpointPolicy:
-            return {_TAG: "checkpoint", "spec": enc(value.to_dict(), ".spec")}
+            return {_TAG: "checkpoint", "spec": encode_child(value.to_dict(), ".spec")}
         if isinstance(value, PurePath):
             return {_TAG: "path", "value": str(value)}
         if isinstance(value, torch.dtype):
@@ -210,11 +225,11 @@ class _Encoder:
             for key, item in value.items():
                 if type(key) is not str:
                     raise _error(path, f"Mappings require string keys; got key {key!r}.")
-                items.append([key, enc(item, f"[{key!r}]")])
+                items.append([key, encode_child(item, f"[{key!r}]")])
             # Every user mapping is escaped, including mappings that look tagged.
             return {_TAG: "mapping", "items": items}
         if type(value) in {tuple, list}:
-            items = [enc(item, f"[{index}]") for index, item in enumerate(value)]
+            items = [encode_child(item, f"[{index}]") for index, item in enumerate(value)]
             return {_TAG: "tuple", "items": items} if type(value) is tuple else items
         if callable(value):
             try:
@@ -259,7 +274,7 @@ class _Validator:
         self.lazy_ids: set[str] = set()
         self.active: set[int] = set()
 
-    def value(self, value: Any, path: str, depth: int = 0) -> None:
+    def validate_value(self, value: Any, path: str, depth: int = 0) -> None:
         self.nodes += 1
         if depth > _MAX_DEPTH or self.nodes > _MAX_NODES:
             raise _error(path, "Recipe exceeds the transport nesting or item limit.")
@@ -269,48 +284,52 @@ class _Validator:
             if not math.isfinite(value):
                 raise _error(path, "Only finite floats are allowed.")
             return
-        if id(value) in self.active:
+        object_id = id(value)
+        if object_id in self.active:
             raise _error(path, "Cyclic transport values are invalid.")
-        self.active.add(id(value))
+        self.active.add(object_id)
         try:
-            self._value(value, path, depth)
+            self._validate_recipe_value(value, path, depth)
         finally:
-            self.active.remove(id(value))
+            self.active.remove(object_id)
 
-    def _value(self, value: Any, path: str, depth: int) -> None:
-        def check(item: Any, suffix: str) -> None:
-            self.value(item, path + suffix, depth + 1)
+    def _validate_recipe_value(self, value: Any, path: str, depth: int) -> None:
+        def validate_child(item: Any, suffix: str) -> None:
+            self.validate_value(item, path + suffix, depth + 1)
 
         if type(value) is list:
             for index, item in enumerate(value):
-                check(item, f"[{index}]")
+                validate_child(item, f"[{index}]")
             return
         if type(value) is not dict or type(value.get(_TAG)) is not str:
             raise _error(path, "Expected a JSON value or a recognized tagged recipe.")
         tag = value[_TAG]
         if tag == "mapping":
             for key, item in _mapping_fields(value, path).items():
-                check(item, f"[{key!r}]")
+                validate_child(item, f"[{key!r}]")
         elif tag == "tuple":
             _fields(value, path, {_TAG, "items"})
             if type(value["items"]) is not list:
                 raise _error(path, "Tuple items must be a list.")
             for index, item in enumerate(value["items"]):
-                check(item, f"[{index}]")
+                validate_child(item, f"[{index}]")
         elif tag in {"factory_ref", "callable"}:
             _fields(value, path, {_TAG, "module", "qualname"})
             _factory_syntax(value, path)
         elif tag in {"lazy", "lazy_ref"}:
-            expected = {_TAG, "id"} if tag == "lazy_ref" else {_TAG, "id", "factory", "args", "kwargs", "gpu", "training"}
+            expected = (
+                {_TAG, "id"} if tag == "lazy_ref"
+                else {_TAG, "id", "factory", "args", "kwargs", "gpu", "training"}
+            )
             _fields(value, path, expected)
-            identity = value["id"]
-            if type(identity) is not str or not re.fullmatch(r"l[0-9]+", identity):
+            recipe_id = value["id"]
+            if type(recipe_id) is not str or not re.fullmatch(r"l[0-9]+", recipe_id):
                 raise _error(path + ".id", "Invalid Lazy recipe identity.")
             if tag == "lazy_ref":
-                if identity not in self.lazy_ids:
+                if recipe_id not in self.lazy_ids:
                     raise _error(path, "Lazy references must refer to an earlier complete recipe.")
                 return
-            if identity in self.lazy_ids:
+            if recipe_id in self.lazy_ids:
                 raise _error(path, "Duplicate Lazy recipe identity.")
             if type(value["factory"]) is not dict or value["factory"].get(_TAG) != "callable":
                 raise _error(path + ".factory", "Lazy requires an importable callable reference.")
@@ -322,15 +341,16 @@ class _Validator:
             if type(value["training"]) is not bool:
                 raise _error(path + ".training", "Lazy training mode must be a boolean.")
             for key in ("factory", "args", "kwargs"):
-                check(value[key], "." + key)
-            if identity in self.lazy_ids:
+                validate_child(value[key], "." + key)
+            if recipe_id in self.lazy_ids:
                 raise _error(path, "Duplicate nested Lazy recipe identity.")
-            self.lazy_ids.add(identity)
+            # Aliases may reference this recipe only after its children validate.
+            self.lazy_ids.add(recipe_id)
         elif tag == "optimizer":
             _fields(value, path, {_TAG, "name", "params", "kwargs"})
             _mapping_fields(value["kwargs"], path + ".kwargs")
             for key in ("name", "params", "kwargs"):
-                check(value[key], "." + key)
+                validate_child(value[key], "." + key)
         elif tag in {"data_pipeline", "schedule", "checkpoint"}:
             _fields(value, path, {_TAG, "spec"})
             members = _mapping_fields(value["spec"], path + ".spec")
@@ -341,7 +361,7 @@ class _Validator:
             }[tag]
             if set(members) != required:
                 raise _error(path + ".spec", f"Unexpected {tag} specification fields.")
-            check(value["spec"], ".spec")
+            validate_child(value["spec"], ".spec")
         elif tag in {"path", "device"}:
             _fields(value, path, {_TAG, "value"})
             if type(value["value"]) is not str or not value["value"] or "\x00" in value["value"]:
@@ -376,7 +396,7 @@ def validate_run_spec(spec: Any) -> None:
         raise _error("run.config", f"Unknown training options: {sorted(set(config) - _CONFIG_KEYS)!r}.")
     validator = _Validator()
     for key in ("algorithm_input", "data", "config"):
-        validator.value(spec[key], "run." + key)
+        validator.validate_value(spec[key], "run." + key)
     try:
         size = len(json.dumps(spec, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii"))
     except (ValueError, TypeError, RecursionError) as exc:
@@ -411,9 +431,12 @@ def serialize_run(run: Run, *, data_paths: Mapping | None = None) -> dict[str, A
         remapped = _remap(data, mapping, "run.data")
         data = Path(remapped) if isinstance(data, PurePath) else remapped
     spec = {
-        "format": RUN_FORMAT, "version": RUN_VERSION, "id": run.id,
-        "algorithm_input": encoder.encode(algorithm, "run.algorithm_input"),
-        "data": encoder.encode(data, "run.data"), "config": encoder.encode(run.config, "run.config"),
+        "format": RUN_FORMAT,
+        "version": RUN_VERSION,
+        "id": run.id,
+        "algorithm_input": encoder.encode_value(algorithm, "run.algorithm_input"),
+        "data": encoder.encode_value(data, "run.data"),
+        "config": encoder.encode_value(run.config, "run.config"),
     }
     validate_run_spec(spec)
     return spec

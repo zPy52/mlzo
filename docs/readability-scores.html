@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLZO readability scores</title>
+<style>
+:root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); color: var(--foreground, #252525); }
+body { margin: 0; }
+figure { margin: 0; }
+figcaption { margin-bottom: 14px; font-weight: 600; font-size: 15px; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { display: grid; grid-template-columns: 76px minmax(0, 1fr) 42px; align-items: center; gap: 12px; min-height: 34px; font-size: 13px; }
+.track { height: 17px; border-radius: 3px; background: var(--secondary, #e8e8e8); overflow: hidden; }
+.bar { display: block; height: 17px; border-radius: 3px; background: var(--chart-1, #2b6eb7); }
+li:first-child .bar { background: var(--muted-foreground, #777777); }
+strong { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.scale { display: flex; justify-content: space-between; margin: 6px 54px 0 88px; font-size: 11px; color: var(--muted-foreground, #6b6b6b); }
+p { margin: 14px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted-foreground, #6b6b6b); }
+</style>
+</head>
+<body>
+<figure aria-label="Whole-codebase readability scores, on a scale from zero to ten">
+<figcaption>Whole-codebase readability · weighted score out of 10</figcaption>
+<ul><li><span class="label">Baseline</span><span class="track" aria-hidden="true"><span class="bar" style="width:82.80%"></span></span><strong>8.28</strong></li>
+<li><span class="label">Round 1</span><span class="track" aria-hidden="true"><span class="bar" style="width:83.80%"></span></span><strong>8.38</strong></li>
+<li><span class="label">Round 2</span><span class="track" aria-hidden="true"><span class="bar" style="width:85.40%"></span></span><strong>8.54</strong></li>
+<li><span class="label">Round 3</span><span class="track" aria-hidden="true"><span class="bar" style="width:86.50%"></span></span><strong>8.65</strong></li>
+<li><span class="label">Round 4</span><span class="track" aria-hidden="true"><span class="bar" style="width:87.10%"></span></span><strong>8.71</strong></li>
+<li><span class="label">Round 5</span><span class="track" aria-hidden="true"><span class="bar" style="width:87.60%"></span></span><strong>8.76</strong></li></ul>
+<div class="scale" aria-hidden="true"><span>0</span><span>5</span><span>10</span></div>
+</figure>
+<p>61 Python files reviewed. Five small GPT-6.1 Sol rounds at high reasoning effort. Scores are editorial judgments; they do not certify correctness.</p>
+</body>
+</html>

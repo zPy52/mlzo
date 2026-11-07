@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 from mlzo.errors import ClusterError, ConfigurationError, UnsupportedFeatureError
 from ._common import (APIError, MAX_ARCHIVE, MAX_JSON, MAX_RESULT, TIMEOUT,
                       atomic_json, bounded_json, budget, digest_value, identifier,
-                      loopback, positive_number, private_dir, read_json)
+                      loopback, positive_number, private_dir, read_json, reject_json_constant)
 from ._store import Store
 
 
@@ -108,7 +108,7 @@ class _Handler(BaseHTTPRequestHandler):
         if len(data) != size:
             raise APIError('Incomplete request body.')
         try:
-            value = json.loads(data, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            value = json.loads(data, parse_constant=reject_json_constant)
             if not isinstance(value, dict):
                 raise ValueError()
         except (ValueError, UnicodeError, RecursionError):
@@ -163,6 +163,89 @@ class _Handler(BaseHTTPRequestHandler):
                 os.unlink(temporary)
         return {'digest': digest, 'size_bytes': size}
 
+    def _archive_request(self, digest: str) -> tuple[Any, bool]:
+        owner, store = self.server.owner, self.server.owner._store
+        digest = digest_value(digest)
+        if self.command == 'PUT':
+            return self._upload(digest), False
+        if self.command == 'GET':
+            worker_id = self._auth('worker')
+            store.require_archive_assignment(worker_id, digest)
+            target = owner._archives / digest
+            if not target.exists():
+                raise APIError('Assigned archive is missing.', status=404)
+            if target.stat().st_size > MAX_ARCHIVE:
+                raise APIError('Stored archive exceeds the size limit.', status=413)
+            data = target.read_bytes()
+            if len(data) > MAX_ARCHIVE:
+                raise APIError('Stored archive exceeds the size limit.', status=413)
+            return data, True
+        raise APIError('Unknown API endpoint.', status=404)
+
+    def _worker_request(self, path: list[str]) -> dict:
+        owner, store = self.server.owner, self.server.owner._store
+        worker_id = self._auth('worker')
+        if self.command != 'POST' or len(path) != 3:
+            raise APIError('Unknown worker endpoint.', status=404)
+        payload = self._body()
+        if path[2] == 'heartbeat':
+            inventory = payload.get('inventory')
+            if inventory is not None:
+                owner._inventory(inventory)
+            return store.heartbeat(worker_id, inventory)
+        if path[2] == 'claim':
+            known = payload.get('known_run')
+            if known is not None:
+                identifier(known)
+            return store.claim(worker_id, known)
+        if path[2] == 'report':
+            owner._report(payload)
+            return store.report(worker_id, payload)
+        if path[2] == 'drain':
+            return store.manage(worker_id, 'drain')
+        if path[2] == 'leave':
+            store.leave(worker_id)
+            return {'state': 'leaving'}
+        if path[2] == 'command':
+            return {'command': store.claim_command(worker_id)}
+        if path[2] == 'command-result':
+            bounded_json(payload['result'], MAX_RESULT)
+            return store.report_command(worker_id, payload['id'], payload['result'])
+        raise APIError('Unknown API endpoint.', status=404)
+
+    def _run_request(self, path: list[str], query: str) -> dict:
+        store = self.server.owner._store
+        self._auth('submit')
+        run_id = identifier(path[2])
+        if len(path) == 3 and self.command == 'GET':
+            return store.get_run(run_id)
+        if len(path) == 4:
+            action = path[3]
+            if action == 'events' and self.command == 'GET':
+                after = int(parse_qs(query).get('after', ['0'])[0])
+                if after < 0:
+                    raise ConfigurationError('after must be nonnegative.')
+                return {'events': store.events(run_id, after)}
+            if action == 'cancel' and self.command == 'POST':
+                self._body()
+                return store.cancel(run_id)
+            if action == 'command' and self.command == 'POST':
+                value = self._body()
+                spec = value['spec']
+                if not isinstance(spec, dict) or spec.get('type') not in {'checkpoint', 'export'}:
+                    raise ConfigurationError('Unknown completed-job command.')
+                for field in ('to', 'block'):
+                    if spec.get(field) is not None and (
+                        not isinstance(spec[field], str)
+                        or len(spec[field]) > 4096
+                        or '\x00' in spec[field]
+                    ):
+                        raise ConfigurationError('Invalid remote path or block.')
+                if spec['type'] == 'export' and not spec.get('to'):
+                    raise ConfigurationError('Remote export requires to=.')
+                return store.command(run_id, spec, value['request_id'])
+        raise APIError('Unknown API endpoint.', status=404)
+
     def _route(self) -> tuple[Any, bool]:
         owner, store = self.server.owner, self.server.owner._store
         parsed = urlsplit(self.path)
@@ -170,24 +253,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not path or path[0] != 'v1':
             raise APIError('Unknown API endpoint.', status=404)
         if path[:2] == ['v1', 'archives'] and len(path) == 3:
-            digest = digest_value(path[2])
-            if self.command == 'PUT':
-                return self._upload(digest), False
-            if self.command == 'GET':
-                worker_id = self._auth('worker')
-                with store._lock:
-                    allowed = store.db.execute('SELECT id FROM runs WHERE archive=? AND worker_id=? LIMIT 1', (digest, worker_id)).fetchone()
-                if allowed is None:
-                    raise APIError('Archive is not assigned to this worker.', status=403)
-                target = owner._archives / digest
-                if not target.exists():
-                    raise APIError('Assigned archive is missing.', status=404)
-                if target.stat().st_size > MAX_ARCHIVE:
-                    raise APIError('Stored archive exceeds the size limit.', status=413)
-                data = target.read_bytes()
-                if len(data) > MAX_ARCHIVE:
-                    raise APIError('Stored archive exceeds the size limit.', status=413)
-                return data, True
+            return self._archive_request(path[2])
         if self.command == 'POST' and path == ['v1', 'enroll']:
             payload = self._body()
             if not isinstance(payload.get('secret'), str) or len(payload['secret']) > 256:
@@ -195,43 +261,20 @@ class _Handler(BaseHTTPRequestHandler):
             owner._inventory(payload.get('inventory'))
             return store.enroll(payload['secret'], payload['request_id'], payload['inventory']), False
         if path[:2] == ['v1', 'worker']:
-            worker_id = self._auth('worker')
-            if self.command != 'POST' or len(path) != 3:
-                raise APIError('Unknown worker endpoint.', status=404)
-            payload = self._body()
-            if path[2] == 'heartbeat':
-                inventory = payload.get('inventory')
-                if inventory is not None:
-                    owner._inventory(inventory)
-                return store.heartbeat(worker_id, inventory), False
-            if path[2] == 'claim':
-                known = payload.get('known_run')
-                if known is not None:
-                    identifier(known)
-                return store.claim(worker_id, known), False
-            if path[2] == 'report':
-                owner._report(payload)
-                return store.report(worker_id, payload), False
-            if path[2] == 'drain':
-                return store.manage(worker_id, 'drain'), False
-            if path[2] == 'leave':
-                with store.transaction() as db:
-                    db.execute('UPDATE workers SET drain=1,stop=1 WHERE id=?', (worker_id,))
-                return {'state': 'leaving'}, False
-            if path[2] == 'command':
-                return {'command': store.claim_command(worker_id)}, False
-            if path[2] == 'command-result':
-                bounded_json(payload['result'], MAX_RESULT)
-                return store.report_command(worker_id, payload['id'], payload['result']), False
+            return self._worker_request(path), False
         if path[:2] == ['v1', 'commands'] and len(path) == 3 and self.command == 'GET':
             self._auth('submit')
             return store.command_status(path[2]), False
         if path == ['v1', 'status'] and self.command == 'GET':
             self._auth('submit')
-            with store._lock:
-                counts = {row[0]: row[1] for row in store.db.execute('SELECT state,COUNT(*) FROM runs GROUP BY state')}
-            return {'state': 'ready', 'generation': 0, 'workers': store.workers(), 'runs': counts,
-                    'capabilities': ['single_worker', 'completed_checkpoint', 'completed_export']}, False
+            counts = store.run_counts()
+            return {
+                'state': 'ready',
+                'generation': 0,
+                'workers': store.workers(),
+                'runs': counts,
+                'capabilities': ['single_worker', 'completed_checkpoint', 'completed_export'],
+            }, False
         if path == ['v1', 'workers'] and self.command == 'GET':
             self._auth('submit')
             return {'workers': store.workers()}, False
@@ -259,31 +302,7 @@ class _Handler(BaseHTTPRequestHandler):
             owner._submission(payload)
             return {'id': store.submit(payload)}, False
         if len(path) >= 3 and path[:2] == ['v1', 'runs']:
-            self._auth('submit')
-            run_id = identifier(path[2])
-            if len(path) == 3 and self.command == 'GET':
-                return store.get_run(run_id), False
-            if len(path) == 4:
-                action = path[3]
-                if action == 'events' and self.command == 'GET':
-                    after = int(parse_qs(parsed.query).get('after', ['0'])[0])
-                    if after < 0:
-                        raise ConfigurationError('after must be nonnegative.')
-                    return {'events': store.events(run_id, after)}, False
-                if action == 'cancel' and self.command == 'POST':
-                    self._body()
-                    return store.cancel(run_id), False
-                if action == 'command' and self.command == 'POST':
-                    value = self._body()
-                    spec = value['spec']
-                    if not isinstance(spec, dict) or spec.get('type') not in {'checkpoint', 'export'}:
-                        raise ConfigurationError('Unknown completed-job command.')
-                    for field in ('to', 'block'):
-                        if spec.get(field) is not None and (not isinstance(spec[field], str) or len(spec[field]) > 4096 or '\x00' in spec[field]):
-                            raise ConfigurationError('Invalid remote path or block.')
-                    if spec['type'] == 'export' and not spec.get('to'):
-                        raise ConfigurationError('Remote export requires to=.')
-                    return store.command(run_id, spec, value['request_id']), False
+            return self._run_request(path, parsed.query), False
         raise APIError('Unknown API endpoint.', status=404)
 
     def _handle(self) -> None:

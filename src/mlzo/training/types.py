@@ -7,14 +7,53 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from numbers import Real
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, TypeVar
 
 import torch
 from torch import nn
 
 from mlzo.errors import ConfigurationError, TrainingError
 
+if TYPE_CHECKING:
+    from .engine import Engine
+
 BatchT = TypeVar("BatchT")
+
+
+class _EngineCounters(TypedDict):
+    """Complete engine counters; remote reports may contain only a subset."""
+
+    iteration: int
+    epoch: int
+    batch_in_epoch: int
+    optimizer_steps: dict[str, int]
+    skipped_updates: dict[str, int]
+    update_events: int
+
+
+class _DataResume(TypedDict):
+    guarantee: Literal["epoch_restart", "unavailable_one_shot"]
+    epoch: int
+    batch_in_epoch: int
+    description: str
+
+
+class _EngineSnapshot(TypedDict):
+    """Complete engine snapshot with dynamic nested runtime state."""
+
+    schema_version: int
+    model: dict[str, Any]
+    optimizers: dict[str, Any]
+    schedulers: dict[str, Any]
+    scalers: dict[str, Any]
+    counters: _EngineCounters
+    rng: dict[str, Any]
+    algorithm_state: Any
+    optimizer_parameters: dict[str, list[list[str]]]
+    optimizer_types: dict[str, str]
+    precision: str
+    data_resume: _DataResume
+    last_checkpoint_event: int
 
 
 @dataclass
@@ -46,7 +85,7 @@ class Training(ABC, Generic[BatchT]):
             raise ConfigurationError("Training(model) requires a torch.nn.Module, including Lazy.")
         self.model = model
         self.state: Any = None
-        self._engine: Any = None
+        self._engine: Engine | None = None
 
     @abstractmethod
     def step(self, batch: BatchT) -> torch.Tensor | Step | None:

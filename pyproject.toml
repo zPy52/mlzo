@@ -27,9 +27,16 @@ vision = ["Pillow"]
 s3 = ["boto3"]
 rl = ["gymnasium"]
 dev = ["build", "twine"]
+test = ["pytest>=8,<9", "pytest-timeout>=2.3,<3"]
 
 [project.scripts]
 mlzo = "mlzo.cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+required_plugins = ["pytest-timeout>=2.3"]
+timeout = 90
 
 [tool.hatch.version]
 path = "src/mlzo/_version.py"
@@ -51,7 +58,9 @@ packages = ["src/mlzo"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/pyproject.toml", "/README.md", "/LICENSE", "/CHANGELOG.md", "/plan.md", "/src/mlzo",
+  "/CONTRIBUTING.md", "/AGENTS.md", "/.agents/skills", "/tests",
   "/docs/alpha-contract.md", "/docs/alpha-support.md", "/docs/usage.md",
   "/docs/publishing.md", "/examples/**/*.py", "/examples/**/README.md",
-  "/examples/**/pyproject.toml",
+  "/examples/**/pyproject.toml", "/tests/**/*.py", "/docs/readability-*.md",
+  "/docs/readability-*.html",
 ]

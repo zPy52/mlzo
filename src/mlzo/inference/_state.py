@@ -16,15 +16,16 @@ def state_dict_copy(state: Any, *, freeze: bool) -> dict[str, Any]:
     active: set[int] = set()
     copied: dict[int, Any] = {}
 
-    def visit(value: Any, depth: int = 0) -> Any:
+    def copy_value(value: Any, depth: int = 0) -> Any:
         if depth > 64:
             raise ConfigurationError("Inference state_dict nesting exceeds 64 levels.")
         if value is None or type(value) in (bool, int, float, str):
             return value
-        if id(value) in active:
+        object_id = id(value)
+        if object_id in active:
             raise ConfigurationError("Cyclic state_dict values are unsupported for inference export.")
-        if id(value) in copied:
-            return copied[id(value)]
+        if object_id in copied:
+            return copied[object_id]
         if torch.nn.parameter.is_lazy(value):
             raise ConfigurationError("Materialize uninitialized PyTorch parameters/buffers before exporting inference weights.")
         if type(value) in (torch.Tensor, torch.nn.Parameter):
@@ -36,33 +37,33 @@ def state_dict_copy(state: Any, *, freeze: bool) -> dict[str, Any]:
                 result = value.detach().cpu().clone() if freeze else value.detach()
             except Exception as exc:
                 raise ConfigurationError("Cannot copy inference weights to portable CPU tensors.") from exc
-            copied[id(value)] = result
+            copied[object_id] = result
             return result
         if type(value) not in (dict, OrderedDict, list, tuple):
             raise ConfigurationError(
                 "Inference state_dict values must be tensors or restricted primitive/container values; "
                 "custom objects and tensor subclasses cannot be pickled into inference artifacts."
             )
-        active.add(id(value))
+        active.add(object_id)
         try:
             if type(value) in (dict, OrderedDict):
                 if any(type(key) is not str for key in value):
                     raise ConfigurationError("Inference state dictionaries require string keys.")
                 result = OrderedDict() if type(value) is OrderedDict else {}
                 for key, child in value.items():
-                    result[key] = visit(child, depth + 1)
+                    result[key] = copy_value(child, depth + 1)
                 if type(value) is OrderedDict:
                     if set(value.__dict__) - {"_metadata"}:
                         raise ConfigurationError("Unsupported custom attributes on an inference state_dict.")
                     if hasattr(value, "_metadata"):
-                        result._metadata = visit(value._metadata, depth + 1)
+                        result._metadata = copy_value(value._metadata, depth + 1)
             elif type(value) is tuple:
-                result = tuple(visit(child, depth + 1) for child in value)
+                result = tuple(copy_value(child, depth + 1) for child in value)
             else:
-                result = [visit(child, depth + 1) for child in value]
-            copied[id(value)] = result
+                result = [copy_value(child, depth + 1) for child in value]
+            copied[object_id] = result
             return result
         finally:
-            active.remove(id(value))
+            active.remove(object_id)
 
-    return visit(state)
+    return copy_value(state)

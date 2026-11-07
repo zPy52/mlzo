@@ -199,8 +199,13 @@ class Worker:
             return False
         try:
             os.kill(pid, 0)
-            output = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'args='], capture_output=True,
-                                    text=True, check=False, timeout=3).stdout
+            output = subprocess.run(
+                ['ps', '-ww', '-p', str(pid), '-o', 'args='],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=3,
+            ).stdout
             return active['nonce'] in output and ('mlzo.cluster._launcher' in output or 'mlzo.cluster._command' in output)
         except (OSError, subprocess.SubprocessError):
             return False
@@ -215,8 +220,15 @@ class Worker:
         # interpreter, never the parent's arbitrary PYTHONPATH or secrets.
         environment['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
         try:
-            self._child = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._child = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             active['pid'] = self._child.pid
             atomic_json(self.directory / 'active.json', active)
         except BaseException as exc:
@@ -225,8 +237,7 @@ class Worker:
             else:
                 atomic_json(directory / 'result.json', {'error': error_value(exc, 'command_launch')})
 
-    def _launch_run(self, job: dict) -> None:
-        directory = private_dir(self.directory / 'jobs' / identifier(job['id']))
+    def _restore_launch(self, directory: Path) -> bool:
         existing = directory / 'launch.json'
         if existing.exists():
             active = read_json(existing)
@@ -234,6 +245,12 @@ class Worker:
             if child_path.exists():
                 active['pid'] = read_json(child_path)['pid']
             atomic_json(self.directory / 'active.json', active)
+            return True
+        return False
+
+    def _launch_run(self, job: dict) -> None:
+        directory = private_dir(self.directory / 'jobs' / identifier(job['id']))
+        if self._restore_launch(directory):
             return
         archive = self.directory / 'cache' / job['archive']
         if not archive.exists():
@@ -252,26 +269,44 @@ class Worker:
         assignment = {**job, 'archive_path': str(archive),
                       'worker_runtime': self._config.get('inventory', {}).get('versions', {})}
         atomic_json(directory / 'assignment.json', assignment)
-        active = {'kind': 'run', 'id': job['id'], 'run_id': job['id'], 'pid': None,
-                  'nonce': secrets.token_hex(24), 'started': time.time(), 'max_runtime': job['fit']['max_runtime']}
-        self._spawn(active, directory, [sys.executable, '-m', 'mlzo.cluster._launcher', str(directory), active['nonce']], directory)
+        active = {
+            'kind': 'run',
+            'id': job['id'],
+            'run_id': job['id'],
+            'pid': None,
+            'nonce': secrets.token_hex(24),
+            'started': time.time(),
+            'max_runtime': job['fit']['max_runtime'],
+        }
+        self._spawn(
+            active,
+            directory,
+            [sys.executable, '-m', 'mlzo.cluster._launcher', str(directory), active['nonce']],
+            directory,
+        )
 
     def _launch_command(self, command: dict) -> None:
         directory = private_dir(self.directory / 'commands' / identifier(command['id']))
-        existing = directory / 'launch.json'
-        if existing.exists():
-            active = read_json(existing)
-            child_path = directory / 'child.json'
-            if child_path.exists():
-                active['pid'] = read_json(child_path)['pid']
-            atomic_json(self.directory / 'active.json', active)
+        if self._restore_launch(directory):
             return
         job = self.directory / 'jobs' / identifier(command['run_id'])
         atomic_json(directory / 'request.json', command)
         python = job / 'venv' / 'bin' / 'python'
-        active = {'kind': 'command', 'id': command['id'], 'run_id': command['run_id'], 'pid': None,
-                  'nonce': secrets.token_hex(24), 'started': time.time(), 'max_runtime': 300}
-        self._spawn(active, directory, [str(python), '-m', 'mlzo.cluster._command', str(job), str(directory), active['nonce']], job / 'project')
+        active = {
+            'kind': 'command',
+            'id': command['id'],
+            'run_id': command['run_id'],
+            'pid': None,
+            'nonce': secrets.token_hex(24),
+            'started': time.time(),
+            'max_runtime': 300,
+        }
+        self._spawn(
+            active,
+            directory,
+            [str(python), '-m', 'mlzo.cluster._command', str(job), str(directory), active['nonce']],
+            job / 'project',
+        )
 
     def _request_cancel(self, active: dict, reason: str) -> None:
         directory = self.directory / ('jobs' if active['kind'] == 'run' else 'commands') / active['id']
@@ -304,18 +339,31 @@ class Worker:
         # Allow interpreter startup time even if its nonce marker is not written yet.
         if not alive and active.get('pid') and time.time() - active['started'] < 3:
             alive = True
-        if alive and (self._force_stop.is_set() or time.time() - active['started'] >= active['max_runtime']):
+        if alive and (
+            self._force_stop.is_set()
+            or time.time() - active['started'] >= active['max_runtime']
+        ):
             self._request_cancel(active, 'Worker stopped by its owner.' if self._force_stop.is_set() else 'Runtime budget exceeded.')
         if (directory / 'cancel.json').exists() and alive:
             self._request_cancel(active, read_json(directory / 'cancel.json')['reason'])
         result_path = directory / 'result.json'
         if not alive and not result_path.exists():
             marker = read_json(directory / 'cancel.json') if (directory / 'cancel.json').exists() else {}
-            error = {'type': 'TimeoutError' if marker.get('timeout') else 'WorkerProcessError',
-                     'message': marker.get('reason', 'Job process stopped or launch was interrupted. No automatic replay.'), 'phase': 'supervisor'}
+            error = {
+                'type': 'TimeoutError' if marker.get('timeout') else 'WorkerProcessError',
+                'message': marker.get('reason', 'Job process stopped or launch was interrupted. No automatic replay.'),
+                'phase': 'supervisor',
+            }
             if active['kind'] == 'run':
-                write_result(directory, {'state': 'cancelled' if marker and not marker.get('timeout') else 'failed',
-                                        'history': None, 'counters': {}, 'error': error})
+                write_result(
+                    directory,
+                    {
+                        'state': 'cancelled' if marker and not marker.get('timeout') else 'failed',
+                        'history': None,
+                        'counters': {},
+                        'error': error,
+                    },
+                )
             else:
                 atomic_json(result_path, {'error': error})
         if self._revoked:
@@ -333,7 +381,11 @@ class Worker:
         events = read_json(events_path).get('events', []) if events_path.exists() else []
         ack = read_json(ack_path)['seq'] if ack_path.exists() else 0
         pending = [event for event in events if event['seq'] > ack]
-        report = {'id': active['id'], 'events': pending[:100], 'state': 'running' if events_path.exists() else 'preparing'}
+        report = {
+            'id': active['id'],
+            'events': pending[:100],
+            'state': 'running' if events_path.exists() else 'preparing',
+        }
         terminal = not alive and result_path.exists() and len(pending) <= 100
         if terminal:
             report['result'] = read_json(result_path, MAX_RESULT)

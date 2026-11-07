@@ -124,13 +124,27 @@ class Store:
         values = []
         for row in rows:
             connected = time.time() - row['last_seen'] < 30
-            state = ('removed' if row['revoked'] else 'stopped' if row['stop'] and not row['active_run']
-                     else 'offline' if not connected else 'draining' if row['drain'] else 'busy' if row['active_run'] else 'idle')
+            if row['revoked']:
+                state = 'removed'
+            elif row['stop'] and not row['active_run']:
+                state = 'stopped'
+            elif not connected:
+                state = 'offline'
+            elif row['drain']:
+                state = 'draining'
+            elif row['active_run']:
+                state = 'busy'
+            else:
+                state = 'idle'
             values.append({'id': row['id'], 'state': state, 'connected': connected,
                            'draining': bool(row['drain']), 'active_run': row['active_run'],
                            'last_seen': row['last_seen'], 'inventory': _load(row['inventory']),
                            'error': row['error']})
         return values
+
+    def run_counts(self) -> dict[str, int]:
+        with self._lock:
+            return {row[0]: row[1] for row in self.db.execute('SELECT state,COUNT(*) FROM runs GROUP BY state')}
 
     def manage(self, worker_id: str, action: str) -> dict:
         worker_id = identifier(worker_id)
@@ -156,6 +170,11 @@ class Store:
             db.execute('UPDATE workers SET drain=1,stop=1 WHERE revoked=0')
         return {'state': 'shutdown_requested', 'workers': self.workers(), 'graceful': True}
 
+    def leave(self, worker_id: str) -> None:
+        """Stop an authenticated worker after its active run; retain run ownership."""
+        with self.transaction() as db:
+            db.execute('UPDATE workers SET drain=1,stop=1 WHERE id=?', (worker_id,))
+
     def heartbeat(self, worker_id: str, inventory: dict | None = None, error: str | None = None) -> dict:
         with self.transaction() as db:
             row = db.execute('SELECT * FROM workers WHERE id=? AND revoked=0', (worker_id,)).fetchone()
@@ -171,6 +190,16 @@ class Store:
     def archive(self, digest: str, size: int) -> None:
         with self.transaction() as db:
             db.execute('INSERT OR IGNORE INTO archives VALUES(?,?,?)', (digest, size, time.time()))
+
+    def require_archive_assignment(self, worker_id: str, digest: str) -> None:
+        """Authorize by persistent assignment, including terminal runs."""
+        with self._lock:
+            allowed = self.db.execute(
+                'SELECT id FROM runs WHERE archive=? AND worker_id=? LIMIT 1',
+                (digest, worker_id),
+            ).fetchone()
+        if allowed is None:
+            raise APIError('Archive is not assigned to this worker.', status=403)
 
     def submit(self, payload: dict) -> str:
         spec, archive = payload['spec'], payload['archive']
@@ -200,6 +229,10 @@ class Store:
                 'fit': _load(row['fit']), 'device': row['device'], 'generation': row['generation']}
 
     def claim(self, worker_id: str, known_run: str | None) -> dict:
+        """Claim one suitable run or redeliver this worker's retained assignment.
+
+        Disconnects never release ownership; unresolved local work blocks a new claim.
+        """
         with self.transaction() as db:
             worker = db.execute('SELECT * FROM workers WHERE id=? AND revoked=0', (worker_id,)).fetchone()
             if worker is None:
@@ -237,12 +270,23 @@ class Store:
         return {'job': None}
 
     def owns(self, worker_id: str, run_id: str) -> sqlite3.Row:
+        """Read persistent ownership or raise 403; caller must hold the journal lock."""
         row = self.db.execute('SELECT * FROM runs WHERE id=? AND worker_id=?', (run_id, worker_id)).fetchone()
         if row is None:
             raise APIError('Run is not assigned to this worker.', status=403)
         return row
 
     def report(self, worker_id: str, payload: dict) -> dict:
+        """Apply an owner report atomically; errors roll back every journal change.
+
+        The coordinator bounds payloads. Required ``id`` identifies the run;
+        optional events need positive integer ``seq`` values. Duplicate sequences
+        keep their first payload, and only the latest MAX_EVENTS are retained.
+        For nonterminal runs, a result must be terminal and clears the matching
+        active_run while retaining run ownership. Terminal runs still accept
+        events but never change state, result or counters. ``ack`` is the largest
+        retained sequence; ``terminal`` says this request supplied a result.
+        """
         run_id = identifier(payload['id'])
         with self.transaction() as db:
             row = self.owns(worker_id, run_id)
@@ -346,6 +390,7 @@ class Store:
             return {'id': row['id'], 'run_id': row['run_id'], 'spec': _load(row['spec'])}
 
     def report_command(self, worker_id: str, command_id: str, result: dict) -> dict:
+        """Keep the assigned worker's first terminal result; repeats only acknowledge."""
         with self.transaction() as db:
             row = db.execute('SELECT * FROM commands WHERE id=? AND worker_id=?', (identifier(command_id), worker_id)).fetchone()
             if row is None:

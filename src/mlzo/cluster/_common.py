@@ -56,13 +56,17 @@ def bounded_json(value: Any, limit: int = MAX_JSON) -> bytes:
     return data
 
 
+def reject_json_constant(_: str) -> None:
+    raise ValueError()
+
+
 def read_json(path: Path, limit: int = MAX_JSON) -> Any:
     with path.open('rb') as stream:
         data = stream.read(limit + 1)
     if len(data) > limit:
         raise ConfigurationError('Local metadata exceeds its size limit.')
     try:
-        return json.loads(data, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        return json.loads(data, parse_constant=reject_json_constant)
     except (ValueError, UnicodeError, RecursionError):
         raise ConfigurationError('Invalid JSON metadata.') from None
 
@@ -195,6 +199,6 @@ class Transport:
         if binary:
             return result
         try:
-            return json.loads(result, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            return json.loads(result, parse_constant=reject_json_constant)
         except (ValueError, UnicodeError, RecursionError):
             raise ClusterError('Coordinator returned invalid JSON.') from None

@@ -429,12 +429,18 @@ class DataPipeline:
     @classmethod
     def from_spec(cls, spec: Mapping, decode: Callable[[Any], Any]) -> DataPipeline:
         """Reconstruct configuration with a one-argument decoder, without building."""
-        if not isinstance(spec, Mapping) or set(spec) != {"version", "source", "operations", "loader"}:
+        if (
+            not isinstance(spec, Mapping)
+            or set(spec) != {"version", "source", "operations", "loader"}
+        ):
             raise ConfigurationError("A data pipeline specification needs version, source, operations, and loader.")
         if type(spec["version"]) is not int or spec["version"] != 1:
             raise UnsupportedFeatureError("Unsupported data pipeline specification version.")
         source = spec["source"]
-        if not isinstance(source, Mapping) or set(source) != {"kind", "value", "options"}:
+        if (
+            not isinstance(source, Mapping)
+            or set(source) != {"kind", "value", "options"}
+        ):
             raise ConfigurationError("Invalid data source specification.")
         if not isinstance(source["options"], Mapping):
             raise ConfigurationError("Data source options must be a mapping.")
@@ -457,7 +463,10 @@ class DataPipeline:
             "tokenize": {"tokenizer", "key"},
         }
         for operation in operations:
-            if not isinstance(operation, Mapping) or set(operation) != {"name", "options"}:
+            if (
+                not isinstance(operation, Mapping)
+                or set(operation) != {"name", "options"}
+            ):
                 raise ConfigurationError("Invalid data operation specification.")
             name = operation["name"]
             if not isinstance(name, str) or name not in required:
@@ -467,7 +476,10 @@ class DataPipeline:
                 raise ConfigurationError(f"Invalid options for data operation {name!r}.")
             result = getattr(result, name)(**{key: decode(value) for key, value in options.items()})
         loader = spec["loader"]
-        if not isinstance(loader, Mapping) or set(loader) != {"workers", "prefetch_factor", "configured"}:
+        if (
+            not isinstance(loader, Mapping)
+            or set(loader) != {"workers", "prefetch_factor", "configured"}
+        ):
             raise ConfigurationError("Invalid loader specification.")
         if not isinstance(loader["configured"], bool):
             raise ConfigurationError("Loader configured flag must be a boolean.")

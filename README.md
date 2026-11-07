@@ -52,12 +52,20 @@ After installation, run these from the repository root:
 ```sh
 python examples/local_classifier.py
 python examples/explicit_updates.py
+python -m unittest discover -s tests -v
 mlzo --help
 python -m mlzo --version
 ```
+
+The unittest command runs the focused contract checks. For the full contributor
+suite, install `.[test,dev]` and run `python -m pytest -q`; see
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup and package checks.
 
 The [remote project example](examples/remote_project/README.md) has an importable model and data factory, plus a guarded submit script. [Usage](docs/usage.md) covers the Python API, coordinator setup, and CLI. `--json` produces structured successes and errors; enrollment secrets go through protected token files or environment variables.
 
 This alpha has no DDP, FSDP, pipeline execution, managed provisioning, S3 checkpoints, or remote inference. GPU and TLS execution paths remain unvalidated. Remote execution is for trusted, single-owner code and is not a hostile-code sandbox. Read the [support boundaries](docs/alpha-support.md) before remote use.
 
 The original [plan.md](plan.md) describes the future product. It is not a list of capabilities available in this release. Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
+For isolated changes, CPU tests, local agent review, and the human merge process,
+see [Contributing](CONTRIBUTING.md).

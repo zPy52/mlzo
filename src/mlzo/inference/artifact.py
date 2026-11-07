@@ -103,7 +103,13 @@ def _reference(value: Any) -> ArtifactRef:
 
 
 def _block_path(value: Any) -> str:
-    if type(value) is not str or not value or any(not part for part in value.split(".")) or "/" in value or "\\" in value:
+    if (
+        type(value) is not str
+        or not value
+        or any(not part for part in value.split("."))
+        or "/" in value
+        or "\\" in value
+    ):
         raise ConfigurationError("block must be a nonempty canonical registered-module path, such as 'encoder.layers.0'.")
     return value
 
@@ -153,7 +159,11 @@ def _validate_manifest(value: Any) -> dict[str, Any]:
     elif value["reconstruction"] != "weights_only" or value["recipe"] is not None:
         raise ConfigurationError("Inference reconstruction must declare a recipe or explicit weights_only mode.")
     versions = value["versions"]
-    if type(versions) is not dict or set(versions) != {"mlzo", "python", "torch"} or any(type(item) is not str or not item for item in versions.values()):
+    if (
+        type(versions) is not dict
+        or set(versions) != {"mlzo", "python", "torch"}
+        or any(type(item) is not str or not item for item in versions.values())
+    ):
         raise ConfigurationError("Inference manifest must identify MLZO, Python, and PyTorch versions.")
     weights = value["weights"]
     if type(weights) is not dict or set(weights) != {"file", "format", "sha256", "size_bytes"}:
@@ -306,8 +316,17 @@ def export_model(model: nn.Module, *, to: Any, recipe: Any = None, block: str | 
                     "block": block,
                     "reconstruction": "weights_only" if encoded is None else "recipe",
                     "recipe": encoded,
-                    "versions": {"mlzo": __version__, "python": platform.python_version(), "torch": str(torch.__version__)},
-                    "weights": {"file": WEIGHTS_NAME, "format": "torch.state_dict", "sha256": digest.hexdigest(), "size_bytes": (staging / WEIGHTS_NAME).stat().st_size},
+                    "versions": {
+                        "mlzo": __version__,
+                        "python": platform.python_version(),
+                        "torch": str(torch.__version__),
+                    },
+                    "weights": {
+                        "file": WEIGHTS_NAME,
+                        "format": "torch.state_dict",
+                        "sha256": digest.hexdigest(),
+                        "size_bytes": (staging / WEIGHTS_NAME).stat().st_size,
+                    },
                 }
                 manifest["artifact_id"] = _artifact_id(manifest)
                 _validate_manifest(manifest)
@@ -340,7 +359,11 @@ def _load_artifact(reference: Any, *, device: str | torch.device, factory: Any) 
     try:
         with _verified_weights(Path(ref.path), manifest["weights"]) as stream:
             try:
-                state = torch.load(stream, map_location="cpu", weights_only=True)
+                state = torch.load(
+                    stream,
+                    map_location="cpu",
+                    weights_only=True,
+                )
             except Exception as exc:
                 raise ConfigurationError(
                     "Restricted inference weights loading failed. Use a compatible PyTorch version "

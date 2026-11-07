@@ -173,8 +173,17 @@ def save_snapshot(
                 "mode": "full",
                 "generation": 0,
                 "world_size": 1,
-                "versions": {"mlzo": __version__, "python": platform.python_version(), "torch": torch_version},
-                "state": {"file": STATE_NAME, "format": "torch.weights_only", "sha256": digest, "size_bytes": size},
+                "versions": {
+                    "mlzo": __version__,
+                    "python": platform.python_version(),
+                    "torch": torch_version,
+                },
+                "state": {
+                    "file": STATE_NAME,
+                    "format": "torch.weights_only",
+                    "sha256": digest,
+                    "size_bytes": size,
+                },
                 "metadata": clean_metadata,
             }
             raw_manifest = json_bytes(manifest, path="manifest")
@@ -227,7 +236,11 @@ def load_snapshot(reference: Reference) -> dict[Any, Any]:
     try:
         directory, manifest = _resolve(reference)
         state = manifest["state"]
-        with storage.verified_state(directory / STATE_NAME, expected_size=state["size_bytes"], expected_sha256=state["sha256"]) as stream:
+        with storage.verified_state(
+            directory / STATE_NAME,
+            expected_size=state["size_bytes"],
+            expected_sha256=state["sha256"],
+        ) as stream:
             return read_state(stream)
     except OSError as exc:
         raise CheckpointError("Cannot read checkpoint files. Supply an existing committed snapshot or valid destination root.") from exc

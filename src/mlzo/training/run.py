@@ -7,7 +7,7 @@ import math
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import torch
 from torch import nn
@@ -18,8 +18,11 @@ from mlzo.model import FactoryRef
 from .runtime import execution_settings
 from .types import History, RunStatus, Training
 
+if TYPE_CHECKING:
+    from .engine import Engine
 
-def _budget(epochs: Any, steps: Any) -> None:
+
+def _validate_budget(epochs: Any, steps: Any) -> None:
     if epochs is not None and steps is not None:
         raise ConfigurationError("fit() accepts total epochs OR total iteration steps, not both.")
     for name, value in (("epochs", epochs), ("steps", steps)):
@@ -27,7 +30,7 @@ def _budget(epochs: Any, steps: Any) -> None:
             raise ConfigurationError(f"{name} must be a positive integer total target.")
 
 
-def _config(config: Mapping[str, Any]) -> None:
+def _validate_config(config: Mapping[str, Any]) -> None:
     if not isinstance(config["precision"], str) or config["precision"] not in {"auto", "fp32", "bf16", "fp16"}:
         raise ConfigurationError("precision must be 'auto', 'fp32', 'bf16', or 'fp16'.")
     if not isinstance(config["matmul"], str) or config["matmul"] not in {"auto", "strict", "fast"}:
@@ -65,7 +68,7 @@ class Run:
         self.data = data
         self.config = dict(config or {})
         self.id = uuid.uuid4().hex
-        self._engine: Any = None
+        self._engine: Engine | None = None
         self._remote_cluster: Any = None
         self._event_callback: Callable[[dict[str, Any]], None] | None = None
         self._state = "created"
@@ -103,7 +106,7 @@ class Run:
         Local execution is synchronous. ``wait=False`` is accepted only for a
         cluster's durable submission. Steps count algorithm calls, not updates.
         """
-        _budget(epochs, steps)
+        _validate_budget(epochs, steps)
         if type(wait) is not bool:
             raise ConfigurationError("wait must be a boolean.")
         target = on if on is not None else self._remote_cluster
@@ -177,9 +180,18 @@ class Run:
             value = self._remote_cluster.get_run(self.id)
             if is_dataclass(value):
                 value = asdict(value)
-            return RunStatus(value.get("state", value.get("status", "unknown")), self.id,
-                             dict(value.get("counters", {})), value.get("error"))
-        return RunStatus(self._state, self.id, self._engine.counters() if self._engine is not None else {}, self._error)
+            return RunStatus(
+                value.get("state", value.get("status", "unknown")),
+                self.id,
+                dict(value.get("counters", {})),
+                value.get("error"),
+            )
+        return RunStatus(
+            self._state,
+            self.id,
+            self._engine.counters() if self._engine is not None else {},
+            self._error,
+        )
 
     def evaluate(self, data: Any, *, step: Callable[..., Any] | None = None) -> dict[str, float]:
         if self._remote_cluster is not None:
@@ -209,7 +221,7 @@ class Run:
             raise TrainingError("Prepare the model with fit() or evaluate() before export().")
         if self._state in {"running", "preparing"}:
             raise TrainingError("Export requires a completed training boundary.")
-        self._engine._safe()
+        self._engine._validate_checkpoint_boundary()
         from mlzo.inference import export_model
         return export_model(self._engine.model, to=to, recipe=self._engine.recipe, block=block)
 
@@ -258,8 +270,21 @@ def train(model_or_training: nn.Module | Training[Any] | Callable[[], Training[A
         raise ConfigurationError(f"Unknown loss {loss!r}.")
     if step is not None and not callable(step):
         raise ConfigurationError("step must be callable(model, batch).")
-    config = {"loss": loss, "step": step, "optimizer": optimizer, "lr": lr, "schedule": schedule,
-              "precision": precision, "matmul": matmul, "grad_clip": grad_clip, "accumulate": accumulate,
-              "compile": compile, "memory": memory, "checkpoint": checkpoint, "device": device, "seed": seed}
-    _config(config)
+    config = {
+        "loss": loss,
+        "step": step,
+        "optimizer": optimizer,
+        "lr": lr,
+        "schedule": schedule,
+        "precision": precision,
+        "matmul": matmul,
+        "grad_clip": grad_clip,
+        "accumulate": accumulate,
+        "compile": compile,
+        "memory": memory,
+        "checkpoint": checkpoint,
+        "device": device,
+        "seed": seed,
+    }
+    _validate_config(config)
     return Run(model_or_training, data, config)

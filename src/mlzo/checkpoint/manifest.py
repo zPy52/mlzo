@@ -55,7 +55,11 @@ class CheckpointRef:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> CheckpointRef:
         fields = {"path", "snapshot_id", "run_id", "created_at", "metadata"}
-        if not isinstance(value, Mapping) or not {"path", "snapshot_id"} <= set(value) or set(value) - fields:
+        if (
+            not isinstance(value, Mapping)
+            or not {"path", "snapshot_id"} <= set(value)
+            or set(value) - fields
+        ):
             raise CheckpointError("A checkpoint reference needs path and snapshot_id fields.")
         return cls(**dict(value))
 
@@ -85,18 +89,33 @@ def validate_manifest(value: dict[str, Any], *, expected_id: str) -> dict[str, A
     if type(value["run_id"]) is not str or not value["run_id"]:
         raise CheckpointError("manifest.run_id must be a nonempty string.")
     _timestamp(value["created_at"])
-    if type(value["generation"]) is not int or type(value["world_size"]) is not int or type(value["mode"]) is not str:
+    if (
+        type(value["generation"]) is not int
+        or type(value["world_size"]) is not int
+        or type(value["mode"]) is not str
+    ):
         raise CheckpointError("Checkpoint mode, generation, or world_size has an invalid type.")
-    if value["mode"] != "full" or value["generation"] != 0 or value["world_size"] != 1:
+    if (
+        value["mode"] != "full"
+        or value["generation"] != 0
+        or value["world_size"] != 1
+    ):
         raise UnsupportedFeatureError(
             "This alpha loads only full, single-worker snapshots with generation=0 and world_size=1. "
             "Per-block snapshots, distributed state, and generation recovery need a supported runtime."
         )
     versions = value["versions"]
-    if type(versions) is not dict or set(versions) != {"mlzo", "python", "torch"} or any(type(item) is not str or not item for item in versions.values()):
+    if (
+        type(versions) is not dict
+        or set(versions) != {"mlzo", "python", "torch"}
+        or any(type(item) is not str or not item for item in versions.values())
+    ):
         raise CheckpointError("manifest.versions must contain MLZO, Python, and PyTorch version strings.")
     state = value["state"]
-    if type(state) is not dict or set(state) != {"file", "format", "sha256", "size_bytes"}:
+    if (
+        type(state) is not dict
+        or set(state) != {"file", "format", "sha256", "size_bytes"}
+    ):
         raise CheckpointError("manifest.state must describe exactly one complete state file.")
     if state["file"] != STATE_NAME or state["format"] != "torch.weights_only":
         raise CheckpointError("manifest.state must name state.pt in the restricted torch.weights_only format.")
@@ -111,7 +130,10 @@ def validate_manifest(value: dict[str, Any], *, expected_id: str) -> dict[str, A
 
 
 def validate_latest(value: dict[str, Any]) -> dict[str, Any]:
-    if set(value) != {"format", "format_version", "snapshot_id", "manifest_sha256"} or value.get("format") != LATEST_FORMAT:
+    if (
+        set(value) != {"format", "format_version", "snapshot_id", "manifest_sha256"}
+        or value.get("format") != LATEST_FORMAT
+    ):
         raise CheckpointError("Invalid latest.json checkpoint pointer; refusing to guess another snapshot.")
     if type(value["format_version"]) is not int or value["format_version"] != FORMAT_VERSION:
         raise CheckpointError("Unsupported latest.json format version; refusing to guess another snapshot.")

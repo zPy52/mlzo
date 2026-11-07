@@ -45,7 +45,12 @@ def opt(name: Any = "adamw", *, params: Any = None, **kwargs: Any) -> OptimizerS
 
 
 def _rate(value: Any, label: str = "lr") -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise ConfigurationError(f"{label} must be a finite nonnegative number.")
     return float(value)
 
@@ -73,7 +78,11 @@ def _select(model: nn.Module, selector: Any) -> list[nn.Parameter]:
 
 
 def _groups(model: nn.Module, selector: Any) -> Any:
-    if isinstance(selector, (tuple, list)) and selector and all(isinstance(item, Mapping) for item in selector):
+    if (
+        isinstance(selector, (tuple, list))
+        and selector
+        and all(isinstance(item, Mapping) for item in selector)
+    ):
         groups = []
         for item in selector:
             if "params" not in item:
@@ -123,11 +132,15 @@ def bind_optimizers(model: nn.Module, specification: Any, lr: float | None) -> d
             groups = _groups(model, spec.params)
             if not groups:
                 raise ConfigurationError(f"Optimizer {label!r} selects no parameters.")
+            uses_parameter_groups = isinstance(groups[0], Mapping)
             # Detect ownership before a constructor can hide duplicates.
-            flat = [p for group in groups for p in group["params"]] if isinstance(groups[0], Mapping) else groups
-            if len({id(p) for p in flat}) != len(flat):
+            if uses_parameter_groups:
+                selected_parameters = [p for group in groups for p in group["params"]]
+            else:
+                selected_parameters = groups
+            if len({id(p) for p in selected_parameters}) != len(selected_parameters):
                 raise ConfigurationError(f"Optimizer {label!r} has overlapping parameter groups/selectors.")
-            if isinstance(groups[0], Mapping) and any(not group["params"] for group in groups):
+            if uses_parameter_groups and any(not group["params"] for group in groups):
                 raise ConfigurationError(f"Optimizer {label!r} has an empty parameter group.")
             try:
                 optimizer = factory(groups, **kwargs)

@@ -13,9 +13,9 @@ Describe the trigger, intended behavior, and how the change addresses one proble
 
 ## Review and risk
 
-- Independent reviewer/session or human, checked revision, findings and disposition.
-  If only self-reviewed, say so and leave independent review pending.
+- Self-review or optional requested review, checked revision, findings and disposition:
 - Remaining risks and how to revert or recover:
 
-Human merge decision is pending. Evidence and approvals must match the current
-candidate; a green test run or agent report is not permission to merge.
+Owner review and merge decision are pending. The owner personally accepts,
+rejects, or merges this PR. Evidence must match the current candidate; a green
+test run or agent report does not replace that decision.

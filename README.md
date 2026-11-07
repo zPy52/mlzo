@@ -71,5 +71,5 @@ This alpha has no DDP, FSDP, pipeline execution, managed provisioning, S3 checkp
 
 The original [plan.md](plan.md) describes the future product. It is not a list of capabilities available in this release. Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
-For isolated changes, CPU tests, local agent review, and the human merge process,
+For isolated changes, CPU tests, PR evidence, and the owner's review process,
 see [Contributing](CONTRIBUTING.md).

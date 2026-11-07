@@ -40,7 +40,7 @@ python -c 'import mlzo; print(mlzo.__version__)'
 python examples/local_classifier.py --output /tmp/mlzo-alpha-example
 ```
 
-Run the example from the unpacked source tree after wheel installation. Choose a fresh output directory. These commands exercise a tiny CPU path; they do not validate GPUs, TLS, remote execution, every dependency version, or optional services. This project deliberately adds no comprehensive test suite or CI workflow.
+Run the example from the unpacked source tree after wheel installation. Choose a fresh output directory. These commands exercise a tiny CPU path; they do not validate GPUs, TLS, remote execution, every dependency version, or optional services. [CONTRIBUTING.md](../CONTRIBUTING.md) covers the regression suite and CPU CI checks required for contributions.
 
 ## Optional index uploads by the owner
 

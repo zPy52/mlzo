@@ -1,10 +1,10 @@
 # Contributing to MLZO
 
 Keep each change focused on one problem. Describe the expected behavior, prove
-it with a small Python or CLI example, obtain a separate local review, and let
-a human decide whether to merge. We use local review for the same purpose as
-hosted review bots, to investigate likely bugs. We do not claim equal coverage
-or assurance, and no paid review service is required.
+it with a small Python or CLI example, and submit a PR with the test evidence.
+The owner reviews every PR and personally accepts, rejects, or merges it.
+Separate agent reviews are optional. There is no automated review or merge
+process; GitHub Actions runs the CPU tests and package checks.
 
 MLZO currently trains on one local device or one enrolled remote worker per
 run. See [alpha support](docs/alpha-support.md). A coordinator can manage workers
@@ -12,7 +12,11 @@ without implementing training across them. `plan.md` describes future work.
 This guide supersedes the original no-test-suite instruction in the historical
 [alpha implementation contract](docs/alpha-contract.md#validation-and-limits).
 
-## One worktree and branch per change
+## One worktree and branch per task thread
+
+Every task thread must use its own branch and worktree. Keep one focused change
+in that workspace, and reuse it when resuming the same task. Do not implement
+changes directly in the shared main checkout.
 
 First inspect `git status --short --untracked-files=all` and
 `git worktree list --porcelain`. If T3 or another tool already prepared a
@@ -91,49 +95,56 @@ when an implemented behavior needs protection. Remove redundant tests only
 after naming the same failure mode another retained check catches. Skip tests
 that repeat implementation, check prose, or merely count mock calls.
 
-## Review, evidence, and the merge decision
+## PR evidence and human review
 
-Codex discovers the project-local [skills](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
-under `.agents/skills`. Ask it to use `$mlzo-change` for a change or
-`$mlzo-review` for review alone. Other agents can read the linked SKILL.md files
-directly. A separate reviewer session or a human can do the independent pass.
-The implementer's self-review is useful but must be labeled as such. Record
-independent review as pending if none occurred; do not invent an approval.
+The two project skills live under `.agents/skills`:
 
-Give the reviewer the intent, base/head SHAs, merge base, and relevant checks.
-For a clean candidate record `git rev-parse HEAD 'HEAD^{tree}'`. For local edits
-include staged/unstaged diffs and in-scope untracked file hashes, as specified
-in [mlzo-review](.agents/skills/mlzo-review/SKILL.md). Do not hide dirty inputs
-behind a clean HEAD SHA or stage someone else's work to obtain a fingerprint.
-Review should trace real callers and reproduce likely bugs. Findings should
-identify affected lines, a trigger, a consequence, and supporting evidence.
-Separate pre-existing bugs and unverified concerns from introduced defects.
+- [mlzo-file-pr](.agents/skills/mlzo-file-pr/SKILL.md) gathers test evidence and
+  files or updates a PR when requested.
+- [mlzo-review](.agents/skills/mlzo-review/SKILL.md) investigates a PR, branch,
+  or local diff when a review is requested. It is optional and does not replace
+  the owner's review.
 
-Fix demonstrated bugs and rerun affected checks. Explain rejected findings
-with evidence. A single separate review is enough to start; further rounds
-need new changes or unresolved findings. Stop circular disagreement and give
-the human the evidence instead of chasing a score.
+Implementation follows this guide and AGENTS.md without a separate contribution
+skill. Filing a PR does not require a second agent, a review bot, repeated review
+rounds, or a numeric score. Label an implementer's own check as self-review.
 
+Inspect the full diff against the intended base, including staged, unstaged,
+and in-scope untracked files. Fix demonstrated bugs and rerun affected checks.
 Commit only this change, then fill the [PR template](.github/pull_request_template.md)
-with exact commands, outcomes, environment versions, revision/tree, review
-status, and unverified behavior. Terminal transcripts and numerical comparisons
-are the evidence for this CLI/Python project. No screenshots or videos are
-needed. Do not commit runtime state, credentials, logs, or PR-only artifacts.
+with the problem, solution, exact commands and outcomes, environment versions,
+base/merge-base/head SHAs, checked tree, and unverified behavior. For a clean
+candidate record `git rev-parse HEAD 'HEAD^{tree}'`; for local edits record the
+dirty inputs as described in mlzo-review. Do not identify dirty work by HEAD
+alone or stage someone else's files to obtain a fingerprint.
 
-Push and create/update a PR only when the task authorizes it. Otherwise leave
-the local commit and prepared description. Before merging, check the current
-base/head, required CI, unresolved findings, and human decision. New commits,
-base updates, rebases, merges, or dirty edits invalidate previous evidence.
-Refresh relevant checks and review for the resulting candidate. GitHub tests a
-synthetic PR merge commit by default; distinguish that SHA from the branch head
-when reporting CI. A green run or agent report does not authorize merging.
+Terminal output, numerical comparisons, and relevant log excerpts are the
+evidence for this CLI/Python project. No screenshots or videos are needed.
+Do not commit runtime state, credentials, logs, or PR-only artifacts. Record
+failed, skipped, and blocked checks honestly rather than describing them as
+passed. An optional review should identify concrete bugs with affected lines,
+a trigger, a consequence, and supporting evidence.
 
-A human must decide to merge the checked revision. An agent can perform that
-action only with explicit merge authorization for it. Never enable auto-merge
-or bypass protection as part of this workflow. After the change is retained in
-the merged history, remove a clean task-owned worktree with `git worktree remove`
-and its merged branch with `git branch -d` when cleanup is authorized. Inspect
-untracked/ignored artifacts first; do not force deletion if either command refuses.
+Push and create/update a PR only when requested. Otherwise leave the local
+commit and a prepared description. After filing, hand the PR to the owner;
+do not start an automated review or babysitting process. If an extra review
+is requested, report its findings and limitations without claiming approval.
+
+Evidence must identify the revision it checked. New commits, base updates,
+rebases, merges, or dirty edits can make it stale. Inspect the delta and refresh
+affected checks and any review claims before handoff. GitHub tests a synthetic
+PR merge commit by default; distinguish that SHA from the branch head when
+reporting CI.
+
+The owner reviews the current candidate and personally decides whether to
+accept, reject, or merge it. Agents leave the PR open and unmerged. Never enable
+auto-merge or bypass branch protection as part of this workflow. A green CI run
+or agent report does not replace the owner's decision.
+
+After the change is retained in the merged history, remove a clean task-owned
+worktree with `git worktree remove` and its merged branch with `git branch -d`
+when cleanup is authorized. Inspect untracked/ignored artifacts first; do not
+force deletion if either command refuses.
 
 ## Enable the GitHub gate after the first run
 
@@ -181,6 +192,6 @@ exchange and distributed backprop tests only when those capabilities exist.
 This is a small MLZO adaptation of T3's
 [behavioral evidence](https://github.com/pingdotgg/t3code/blob/main/CONTRIBUTING.md#verification)
 and [focused testing](https://github.com/pingdotgg/t3code/blob/main/docs/internals/testing.md),
-and Anthropic's
-[investigation and human review](https://claude.dev/blog/solving-code-review-at-anthropic/).
+with PR preparation inspired by tstack's
+[file-pr](https://github.com/t3dotgg/tstack/blob/main/skills/file-pr/SKILL.md).
 Their infrastructure and reported results are not guarantees for this repository.

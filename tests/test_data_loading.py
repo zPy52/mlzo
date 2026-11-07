@@ -318,7 +318,8 @@ def test_filter_scalar_predicates_and_streams():
     assert list(ml.data(torch.arange(5)).filter(lambda x: x >= 2)) == [2, 3, 4]
     assert list(ml.data([0, 1, 2]).filter(lambda x: np.bool_(x > 0))) == [1, 2]
     assert list(itertools.islice(ml.data(stream=infinite_stream).filter(lambda x: x % 2 == 0), 5)) == [0, 2, 4, 6, 8]
-    for invalid in [lambda x: torch.tensor([True, False]), lambda x: 1, lambda x: "yes"]:
+    for invalid in [lambda x: torch.tensor([True, False]), lambda x: 1, lambda x: "yes",
+                    lambda x: np.int64(1), lambda x: np.array(True), lambda x: np.array([True])]:
         with pytest.raises(ConfigurationError, match="boolean|scalar"):
             list(ml.data([1]).filter(invalid))
     bounded = ml.data(stream=infinite_stream).shuffle(buffer=5)
